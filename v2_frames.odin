@@ -98,6 +98,10 @@ frame_id_len :: proc(version: V2_Version) -> int {
 	return 3 if version == .V2_2 else 4
 }
 
+// No real tag comes near it, but a tag of empty frames would cost about 12 times its size in memory.
+@(private)
+MAX_FRAMES :: 1 << 16
+
 // The frames and padding of a tag, as positions in src. When unsynchronisation was undone for the
 // whole tag, src holds the decoded bytes: base is where they start in the file, and removed lists
 // the decoded positions where a byte was taken out, to find frames in the file again.
@@ -199,6 +203,10 @@ read_frames :: proc(tag: ^Tag, body: ^Body, options: Read_Options, warnings: ^Wa
 	id_len := frame_id_len(tag.version)
 	pos := body.start
 	for pos < body.end {
+		if len(tag.frames) >= MAX_FRAMES {
+			warnings^ += {.Too_Many_Frames}
+			return nil
+		}
 		buf: [FRAME_HEADER_SIZE]u8
 		head := source_bytes(body.src, pos, buf[:min(body.end - pos, header_size)]) or_return
 		if len(head) == 0 {

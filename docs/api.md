@@ -128,6 +128,7 @@ Warning :: enum u8 {
 	Second_V2_Tag, // a second ID3v2 tag, appended or right after the first
 	Bad_Footer,
 	Frame_Problems, // at least one frame has a problem, see Frame.problem
+	Too_Many_Frames, // more than 65536 frames: the frames after them are not read
 }
 Warnings :: bit_set[Warning; u16]
 ```
