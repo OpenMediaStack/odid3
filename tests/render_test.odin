@@ -68,10 +68,6 @@ rendered_tags_read_back_the_same :: proc(t: ^testing.T) {
 		for i in 0 ..< min(len(again.v2.frames), len(tags.v2.frames)) {
 			a, b := again.v2.frames[i], tags.v2.frames[i]
 			format := b.format
-			if b.problem == .None {
-				// Compression on write comes with its own slice.
-				format -= {.Compression}
-			}
 			same :=
 				a.id == b.id &&
 				a.problem == b.problem &&
