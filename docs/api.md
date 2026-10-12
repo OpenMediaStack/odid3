@@ -309,7 +309,8 @@ Table_Of_Contents :: struct {
 decode_frame :: proc(frame: ^Frame, version: V2_Version, allocator := context.allocator) -> (content: Frame_Content, err: Error)
 encode_frame :: proc(content: Frame_Content, id: string, version: V2_Version, allocator := context.allocator) -> (frame: Frame, err: Error)
 
-// Re-encodes the text of a frame, or of every text frame of a tag.
+// Re-encodes the text of a frame, or of every frame of a tag that holds text, chapters included;
+// every frame changes or none. A frame already in the encoding is left as it is.
 set_encoding :: proc{set_frame_encoding, set_tag_encoding}
 ```
 
