@@ -155,7 +155,8 @@ read_v2_tag :: proc(
 	defer if err != nil {
 		destroy_tag(&tag)
 	}
-	if tag.version != .V2_3 && tag.version != .V2_4 {
+	if .Compression in tag.flags {
+		warnings^ += {.Compressed_V22_Tag}
 		return
 	}
 	end := range.offset + V2_HEADER_SIZE + header.size
@@ -164,6 +165,7 @@ read_v2_tag :: proc(
 		start     = range.offset + V2_HEADER_SIZE,
 		end       = min(end, src.size),
 		truncated = end > src.size,
+		version   = tag.version,
 	}
 	raw: []u8
 	removed: [dynamic]u32
