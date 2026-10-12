@@ -288,6 +288,7 @@ Chapter :: struct {
 	start_offset: u32, // 0xFFFFFFFF when unused
 	end_offset:   u32,
 	frames:       [dynamic]Frame, // the embedded frames, with offset -1
+	warnings:     Warnings, // what reading them found wrong
 }
 
 Table_Of_Contents :: struct {
@@ -295,7 +296,8 @@ Table_Of_Contents :: struct {
 	top_level:  bool,
 	ordered:    bool,
 	children:   []string, // element IDs
-	frames:     [dynamic]Frame,
+	frames:     [dynamic]Frame, // the embedded frames, with offset -1
+	warnings:   Warnings,
 }
 
 // User_Text, Url, User_Url, Unique_File_Id, Popularimeter, Play_Counter, Private and Binary
