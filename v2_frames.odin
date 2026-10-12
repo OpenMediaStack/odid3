@@ -93,6 +93,7 @@ Body :: struct {
 	end:           i64,
 	truncated:     bool,
 	plain_sizes:   bool, // ID3v2.4: a frame size was a plain integer, so later ones probably are
+	id_len:        int, // 3 in ID3v2.2, 4 after
 	base:          i64,
 	removed:       []u32,
 	unsync_frames: bool, // ID3v2.4: the tag header says every frame is unsynchronised
@@ -171,17 +172,34 @@ Frame_Start :: enum u8 {
 
 @(private)
 Frame_Header :: struct {
-	id:    [4]u8,
-	size:  i64,
-	flags: [2]u8,
+	id:          [4]u8,
+	id_len:      int,
+	size:        i64,
+	flags:       [2]u8,
+	header_size: i64,
 }
+
+// ID3v2.2 frame headers are 6 bytes: a 3 character ID and a 24-bit size, without flags.
+@(private)
+V22_FRAME_HEADER_SIZE :: 6
 
 @(private)
 read_frames :: proc(tag: ^Tag, body: ^Body, options: Read_Options, warnings: ^Warnings) -> Error {
+	h := Frame_Header {
+		id_len      = 4,
+		header_size = FRAME_HEADER_SIZE,
+	}
+	if tag.version == .V2_2 {
+		h = {
+			id_len      = 3,
+			header_size = V22_FRAME_HEADER_SIZE,
+		}
+	}
+	body.id_len = h.id_len
 	pos := body.start
 	for pos < body.end {
 		buf: [FRAME_HEADER_SIZE]u8
-		head := source_bytes(body.src, pos, buf[:min(body.end - pos, FRAME_HEADER_SIZE)]) or_return
+		head := source_bytes(body.src, pos, buf[:min(body.end - pos, h.header_size)]) or_return
 		if len(head) == 0 {
 			return nil
 		}
@@ -189,20 +207,23 @@ read_frames :: proc(tag: ^Tag, body: ^Body, options: Read_Options, warnings: ^Wa
 			read_padding(tag, body, pos, warnings) or_return
 			return nil
 		}
-		if len(head) < FRAME_HEADER_SIZE || head[0] < 'A' || head[0] > 'Z' {
+		if i64(len(head)) < h.header_size || head[0] < 'A' || head[0] > 'Z' {
 			report_damage(body, warnings)
 			return nil
 		}
-		h := Frame_Header{}
-		copy(h.id[:], head[:4])
-		copy(h.flags[:], head[8:10])
-		h.size = frame_size(body, pos, tag.version, head[4:8], warnings) or_return
-		next := pos + FRAME_HEADER_SIZE + h.size
+		copy(h.id[:], head[:h.id_len])
+		if tag.version == .V2_2 {
+			h.size = i64(head[3]) << 16 | i64(head[4]) << 8 | i64(head[5])
+		} else {
+			copy(h.flags[:], head[8:10])
+			h.size = frame_size(body, pos, tag.version, head[4:8], warnings) or_return
+		}
+		next := pos + h.header_size + h.size
 		if h.size < 0 || next > body.end {
 			report_damage(body, warnings)
 			return nil
 		}
-		if !is_frame_id(head[:4]) {
+		if !is_frame_id(head[:h.id_len]) {
 			// Some taggers wrote odd IDs, such as ID3v2.2's 3 letters and a NUL in an ID3v2.3 tag:
 			// such a frame is kept when its size leads to what can follow a frame.
 			if (frame_start_at(body, next) or_return) == .Nothing {
@@ -306,11 +327,12 @@ frame_start_at :: proc(body: ^Body, at: i64) -> (start: Frame_Start, err: Error)
 		return .Nothing, nil
 	}
 	buf: [4]u8
-	b := source_bytes(body.src, at, buf[:min(body.end - at, 4)]) or_return
+	id_len := body.id_len if body.id_len > 0 else 4
+	b := source_bytes(body.src, at, buf[:min(body.end - at, i64(id_len))]) or_return
 	switch {
 	case len(b) > 0 && b[0] == 0:
 		return .Padding, nil
-	case len(b) == 4 && is_frame_id(b):
+	case len(b) == id_len && is_frame_id(b):
 		return .Frame, nil
 	}
 	return .Nothing, nil
@@ -336,16 +358,16 @@ read_frame :: proc(
 	f.format = frame_format(version, h.flags[1])
 	f.data_length = -1
 	id := h.id
-	f.id = strings.clone(string(id[:]), allocator) or_return
+	f.id = strings.clone(string(id[:h.id_len]), allocator) or_return
 	defer if err != nil {
 		destroy_frame(&f)
 	}
-	if options.skip_picture_data && f.id == "APIC" {
+	if options.skip_picture_data && (f.id == "APIC" || f.id == "PIC") {
 		f.problem = .Skipped_Picture
 		return
 	}
 	f.data = make([]u8, h.size, allocator) or_return
-	source_read(body.src, pos + FRAME_HEADER_SIZE, f.data) or_return
+	source_read(body.src, pos + h.header_size, f.data) or_return
 	// ID3v2.4 unsynchronises everything after the frame header, the bytes the flags add included.
 	if version == .V2_4 && (.Unsynchronisation in f.format || body.unsync_frames) {
 		decoded, valid := undo_unsynchronisation(f.data) or_return

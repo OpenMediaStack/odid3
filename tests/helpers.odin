@@ -178,3 +178,9 @@ unsynchronise :: proc(data: []u8) -> []u8 {
 	}
 	return out[:]
 }
+
+// A frame of an ID3v2.2 tag: a 3 character ID and a 24-bit size.
+frame22 :: proc(id: string, data: []u8) -> []u8 {
+	n := len(data)
+	return concat(transmute([]u8)id, {u8(n >> 16), u8(n >> 8), u8(n)}, data)
+}

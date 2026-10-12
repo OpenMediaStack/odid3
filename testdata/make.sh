@@ -134,6 +134,22 @@ ffmpeg "${silence[@]}" -id3v2_version 4 -write_id3v1 0 "${every_field[@]}" \
 	cat no_tag.mp3
 } >v22.mp3
 
+# v22_pic.mp3: an ID3v2.2 tag with a title and an 8 by 8 red PNG in a PIC frame, whose image
+# format is 3 characters ("PNG") rather than a MIME type.
+# Expect: title "With a picture", one front cover picture (image/png).
+ffmpeg -v error -y -f lavfi -i color=c=red:s=8x8 -frames:v 1 -flags:v +bitexact cover.png
+python3 - cover.png no_tag.mp3 v22_pic.mp3 <<'PY'
+import sys
+picture = open(sys.argv[1], 'rb').read()
+def frame(frame_id, data):
+    return frame_id + len(data).to_bytes(3, 'big') + data
+frames = frame(b'TT2', b'\x00With a picture') + frame(b'PIC', b'\x00PNG\x03\x00' + picture)
+n = len(frames)
+size = bytes([(n >> 21) & 0x7F, (n >> 14) & 0x7F, (n >> 7) & 0x7F, n & 0x7F])
+open(sys.argv[3], 'wb').write(b'ID3\x02\x00\x00' + size + frames + open(sys.argv[2], 'rb').read())
+PY
+rm cover.png
+
 # v23_cover.mp3: ID3v2.3 with a title, a publisher (TPUB) and an 8 by 8 red PNG as front cover
 # (APIC).
 # Expect: title "With a cover", one front cover picture (image/png), publisher "Colophon Records".

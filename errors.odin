@@ -36,6 +36,9 @@ Warning :: enum u8 {
 	Bad_Unsynchronisation,
 	// At least one frame has a problem that is not of its own choosing: see Frame.problem.
 	Frame_Problems,
+	// An ID3v2.2 tag with its compression flag set: no compression scheme was ever defined for it,
+	// so its frames cannot be read.
+	Compressed_V22_Tag,
 }
 
 // Every warning reading raised.
