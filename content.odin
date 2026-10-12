@@ -144,10 +144,10 @@ Binary :: struct {
 
 // Decodes the content of a frame; version is the version of its tag, which decides whether a text
 // frame holds several values (ID3v2.4) and how the frames inside CHAP and CTOC are laid out. The
-// content copies what it needs from the frame and belongs
-// to the caller, who frees it with destroy and the same allocator. A frame whose data is not its
-// content (encrypted, compressed but not inflated, skipped, too short) gives .Not_Decodable; data
-// that does not follow the frame's layout gives .Bad_Content.
+// content copies what it needs from the frame and belongs to the caller, who frees it with destroy
+// and the same allocator. A frame whose data is not its content (encrypted, compressed but not
+// inflated, skipped, too short, a chapter inside a chapter) gives .Not_Decodable; data that does
+// not follow the frame's layout gives .Bad_Content.
 decode_frame :: proc(
 	frame: ^Frame,
 	version: V2_Version,
@@ -157,7 +157,7 @@ decode_frame :: proc(
 	err: Error,
 ) {
 	#partial switch frame.problem {
-	case .Too_Short, .Skipped_Picture, .Encrypted, .Bad_Compression:
+	case .Too_Short, .Skipped_Picture, .Encrypted, .Bad_Compression, .Nested_Chapter:
 		return nil, .Not_Decodable
 	case .Bad_Unsynchronisation:
 		if frame.format & {.Compression, .Encryption} != {} {

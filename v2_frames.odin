@@ -62,6 +62,9 @@ Frame_Problem :: enum u8 {
 	// frame sits in a CHAP or CTOC that was compressed itself or not read from the file: data
 	// holds the bytes as stored, unsynchronisation undone.
 	Bad_Compression,
+	// A CHAP or CTOC inside another: kept as it is but not decoded, since chapters do not nest and
+	// decoding them level after level would cost memory without bound.
+	Nested_Chapter,
 }
 
 // The first frame with this ID at or after start.
@@ -97,6 +100,11 @@ frame_header_size :: proc(version: V2_Version) -> i64 {
 frame_id_len :: proc(version: V2_Version) -> int {
 	return 3 if version == .V2_2 else 4
 }
+
+// No real tag comes near it, but a tag of empty frames costs up to about 33 times its size in
+// memory (ID3v2.2's 6 byte frames, while the array of frames grows).
+@(private)
+MAX_FRAMES :: 1 << 16
 
 // The frames and padding of a tag, as positions in src. When unsynchronisation was undone for the
 // whole tag, src holds the decoded bytes: base is where they start in the file, and removed lists
@@ -233,6 +241,10 @@ read_frames :: proc(tag: ^Tag, body: ^Body, options: Read_Options, warnings: ^Wa
 				return nil
 			}
 			warnings^ += {.Bad_Frame_Ids}
+		}
+		if len(tag.frames) >= MAX_FRAMES {
+			warnings^ += {.Too_Many_Frames}
+			return nil
 		}
 		frame := read_frame(body, pos, h, tag.version, options, tag.allocator) or_return
 		#partial switch frame.problem {
@@ -570,6 +582,9 @@ read_embedded_frames :: proc(
 	}
 	for &f in tag.frames {
 		f.offset = -1
+		if (f.id == "CHAP" || f.id == "CTOC") && f.problem == .None {
+			f.problem = .Nested_Chapter
+		}
 	}
 	return tag.frames, warnings, nil
 }
