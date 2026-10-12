@@ -115,7 +115,7 @@ retitle :: proc(path, cover_path: string) -> id3.Error {
 
 A tag read with damage warnings (`DAMAGE_WARNINGS`), or a file holding a second ID3v2 tag, is only rewritten with `Write_Options.replace_damaged`, since what could not be read would be lost: `Damaged_Tag` is the cue to ask. `Error` is a union of `Format_Error`, `os.Error` and `runtime.Allocator_Error`.
 
-An ID3v1 tag whose values are unchanged keeps its bytes, so text some taggers write in UTF-8 survives a write. A changed one is written from `tags.v1` in Latin-1, the only encoding ID3v1 has, with `?` for what Latin-1 lacks. `sync_v1` rebuilds it from the fields and returns those that do not fit; on a `clone` of the tags, it previews them.
+An ID3v1 tag whose values are unchanged keeps its bytes. A changed one is written from `tags.v1` in its `encoding`: Latin-1, the spec's (with `?` for what Latin-1 lacks), or UTF-8 when its text was read as UTF-8, as ffmpeg and some taggers write it. `Write_Options.v1_encoding` forces one or the other. `sync_v1` rebuilds ID3v1 from the fields, in the encoding it is given or the one the file had, and returns the fields that do not fit (characters in Latin-1, bytes in UTF-8); on a `clone` of the tags, it previews them.
 
 ### Versions and developer options
 

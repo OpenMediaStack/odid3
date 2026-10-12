@@ -13,7 +13,8 @@ content. Writing a tag writes the model as it is, so an untouched frame keeps it
 version is unchanged (a compressed one its content, compressed again); the extended header and
 ID3v2.4's SEEK are not written. convert changes the version and returns the frames it drops or
 carries only in part. An ID3v1 tag whose values are unchanged keeps its bytes; a changed one is
-written in Latin-1, the only encoding ID3v1 has.
+written in the encoding it was read in (Latin-1, or UTF-8 as some taggers write it), unless
+Write_Options.v1_encoding asks for another.
 
 Writing: write_file writes the new file next to the original, then renames it over it; the audio,
 APE and Lyrics3 bytes are copied untouched, and on any error the original is left as it was.
