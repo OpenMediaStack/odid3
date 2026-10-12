@@ -826,3 +826,108 @@ v22_image_format :: proc(mime: string) -> string {
 	}
 	return ""
 }
+
+// Re-encodes the text of a frame, or of every frame of a tag that holds text. Text the encoding
+// cannot hold gives .Not_Encodable and changes nothing, an encoding the version lacks
+// .Encoding_Not_In_Version; frames without text are left as they are.
+set_encoding :: proc {
+	set_frame_encoding,
+	set_tag_encoding,
+}
+
+// See set_encoding. A frame whose data is not its content gives .Not_Decodable.
+set_frame_encoding :: proc(frame: ^Frame, version: V2_Version, encoding: Encoding) -> Error {
+	replacement, changed := reencoded(frame, version, encoding) or_return
+	if changed {
+		destroy_frame(frame)
+		frame^ = replacement
+	}
+	return nil
+}
+
+// See set_encoding. Every frame changes, or none.
+set_tag_encoding :: proc(tag: ^Tag, encoding: Encoding) -> Error {
+	if tag.version == .None {
+		return .No_Version
+	}
+	if !encoding_holds(encoding, tag.version) {
+		return .Encoding_Not_In_Version
+	}
+	replacements := make([dynamic]struct {
+			index: int,
+			frame: Frame,
+		}, tag.allocator)
+	defer delete(replacements)
+	defer for &r in replacements {
+		destroy_frame(&r.frame)
+	}
+	for &f, i in tag.frames {
+		if !has_encoding_byte(f.id) || f.problem != .None {
+			continue
+		}
+		replacement, changed := reencoded(&f, tag.version, encoding) or_return
+		if changed {
+			if _, err := append(&replacements, struct {
+				index: int,
+				frame: Frame,
+			}{i, replacement}); err != nil {
+				destroy_frame(&replacement)
+				return err
+			}
+		}
+	}
+	for &r in replacements {
+		destroy_frame(&tag.frames[r.index])
+		tag.frames[r.index] = r.frame
+		r.frame = {}
+	}
+	return nil
+}
+
+// The frame with its text in another encoding, keeping its ID, flags and group. changed is false
+// for a frame without text.
+@(private)
+reencoded :: proc(
+	f: ^Frame,
+	version: V2_Version,
+	encoding: Encoding,
+) -> (
+	replacement: Frame,
+	changed: bool,
+	err: Error,
+) {
+	if !encoding_holds(encoding, version) {
+		return {}, false, .Encoding_Not_In_Version
+	}
+	if !has_encoding_byte(f.id) {
+		return {}, false, nil
+	}
+	content := decode_frame(f, version, f.allocator) or_return
+	defer destroy_content(&content, f.allocator)
+	switch &c in content {
+	case Text:
+		c.encoding = encoding
+	case User_Text:
+		c.encoding = encoding
+	case User_Url:
+		c.encoding = encoding
+	case Comment:
+		c.encoding = encoding
+	case Picture:
+		c.encoding = encoding
+	case Url,
+	     Unique_File_Id,
+	     Popularimeter,
+	     Play_Counter,
+	     Private,
+	     Chapter,
+	     Table_Of_Contents,
+	     Binary:
+		return {}, false, nil
+	}
+	replacement = encode_frame(content, f.id, version, f.allocator) or_return
+	replacement.status = f.status
+	replacement.format = f.format - {.Encryption}
+	replacement.group = f.group
+	return replacement, true, nil
+}
