@@ -711,9 +711,7 @@ encode_frame :: proc(
 		put_be32(times[8:12], c.start_offset)
 		put_be32(times[12:16], c.end_offset)
 		append(&data, ..times[:]) or_return
-		for &f in c.frames {
-			render_frame(&data, &f, version) or_return
-		}
+		render_embedded_frames(&data, c.frames[:], version) or_return
 	case Table_Of_Contents:
 		encode_string(&data, .Latin1, c.element_id, true) or_return
 		flags: u8 = (0x02 if c.top_level else 0) | (0x01 if c.ordered else 0)
@@ -724,9 +722,7 @@ encode_frame :: proc(
 		for child in c.children {
 			encode_string(&data, .Latin1, child, true) or_return
 		}
-		for &f in c.frames {
-			render_frame(&data, &f, version) or_return
-		}
+		render_embedded_frames(&data, c.frames[:], version) or_return
 	case Binary:
 		append(&data, ..c.data) or_return
 	case:
@@ -744,6 +740,20 @@ encode_frame :: proc(
 	frame.offset = -1
 	frame.data_length = -1
 	return frame, nil
+}
+
+// The frames inside a chapter are written uncompressed: odid3 only inflates them when the chapter
+// comes straight from a file, which a new one does not.
+@(private)
+render_embedded_frames :: proc(data: ^[dynamic]u8, frames: []Frame, version: V2_Version) -> Error {
+	for f in frames {
+		plain := f
+		if !is_stored(&plain) {
+			plain.format -= {.Compression}
+		}
+		render_frame(data, &plain, version) or_return
+	}
+	return nil
 }
 
 @(private)

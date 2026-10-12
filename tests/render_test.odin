@@ -67,13 +67,12 @@ rendered_tags_read_back_the_same :: proc(t: ^testing.T) {
 		testing.expectf(t, len(again.v2.frames) == len(tags.v2.frames), "%s: frame count", name)
 		for i in 0 ..< min(len(again.v2.frames), len(tags.v2.frames)) {
 			a, b := again.v2.frames[i], tags.v2.frames[i]
-			format := b.format
 			same :=
 				a.id == b.id &&
 				a.problem == b.problem &&
 				bytes.equal(a.data, b.data) &&
 				a.status == b.status &&
-				a.format == format &&
+				a.format == b.format &&
 				a.group == b.group &&
 				a.method == b.method
 			testing.expectf(t, same, "%s: frame %d (%s) differs", name, i, b.id)

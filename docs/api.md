@@ -4,7 +4,7 @@ The public API of odid3 as designed, before any library code exists. It is the r
 
 ## Principles
 
-- **The model is exact.** A `Tag` holds every frame as read, unknown ones included, with its flags and its content bytes. Writing a tag writes the model as it is: an untouched frame comes out byte for byte when the version is unchanged. Nothing is dropped except by an explicit call (`convert`, which returns what it dropped, `remove_frame`, `set` with an empty value).
+- **The model is exact.** A `Tag` holds every frame as read, unknown ones included, with its flags and its content bytes. Writing a tag writes the model as it is: an untouched frame comes out byte for byte when the version is unchanged (a compressed frame keeps its content, though odid3's encoder may compress it to other bytes). Nothing is dropped except by an explicit call (`convert`, which returns what it dropped, `remove_frame`, `set` with an empty value).
 - **Typed accessors sit on top of the frames.** `get` and `set` cover the common fields; `decode_frame` and `encode_frame` turn any frame's bytes into a typed value and back.
 - **Damage is not an error.** Reading returns an error only when nothing can be read (the file cannot be opened, a read fails, memory runs out). A damaged tag gives what could be read, plus warnings.
 - **Ownership is explicit.** Everything a procedure allocates comes from its `allocator` parameter, and its doc comment says how to free it: `destroy` for the library's types, or freeing the whole allocator when it is an arena.
