@@ -8,6 +8,7 @@ import "core:hash"
 // untrusted. The decoder follows puff, the reference inflater Mark Adler ships with zlib: Huffman
 // codes are decoded one bit at a time, which is slow but checks every step.
 
+// The largest size a data length indicator can declare: 28 bits.
 @(private)
 MAX_INFLATED_SIZE :: 256 * 1024 * 1024
 
@@ -16,8 +17,8 @@ MAX_INFLATED_SIZE :: 256 * 1024 * 1024
 @(private)
 INFLATE_SLACK :: 64 * 1024
 
-// Deflate encodes at best 258 bytes in a little over 2 bits, so no stream inflates to more than
-// about 1032 times its size.
+// A deflate length and distance pair takes at least 2 bits for 258 bytes, so no stream inflates to
+// more than 1032 times its size.
 @(private)
 MAX_DEFLATE_RATIO :: 1032
 
@@ -179,12 +180,16 @@ Inflate_Error :: enum u8 {
 
 @(private)
 Inflater :: struct {
-	input:  []u8,
-	pos:    int,
-	bits:   u32,
-	count:  u32,
-	output: [dynamic]u8,
-	limit:  int,
+	input:           []u8,
+	pos:             int,
+	bits:            u32,
+	count:           u32,
+	output:          [dynamic]u8,
+	limit:           int,
+	alloc_err:       runtime.Allocator_Error,
+	fixed_built:     bool,
+	fixed_lengths:   Huffman,
+	fixed_distances: Huffman,
 }
 
 // A canonical Huffman code: how many codes have each length, and the symbols ordered by code.
@@ -210,77 +215,92 @@ inflate_frame :: proc(
 	if declared > most {
 		return nil, false, nil
 	}
-	limit := most
+	limit, expected := most, -1
 	if declared >= 0 {
-		limit = max(declared, min(most, INFLATE_SLACK))
+		limit = min(declared + INFLATE_SLACK, most)
+		expected = int(declared)
 	}
 	result: Inflate_Error
-	out, result = inflate_zlib(stream, int(limit), allocator)
+	alloc_err: runtime.Allocator_Error
+	out, result, alloc_err = inflate_zlib(stream, int(limit), allocator, expected)
 	#partial switch result {
 	case .None:
 		return out, true, nil
 	case .Out_Of_Memory:
-		return nil, false, runtime.Allocator_Error.Out_Of_Memory
+		return nil, false, alloc_err
 	}
 	return nil, false, nil
 }
 
 // A zlib stream is a 2 byte header, deflate blocks, then the Adler-32 checksum of the inflated
-// bytes, big endian.
+// bytes, big endian. The output starts with room for expected bytes (-1 when unknown) and never
+// grows past limit.
 @(private)
 inflate_zlib :: proc(
 	stream: []u8,
 	limit: int,
 	allocator: runtime.Allocator,
+	expected := -1,
 ) -> (
 	out: []u8,
 	e: Inflate_Error,
+	alloc_err: runtime.Allocator_Error,
 ) {
 	if len(stream) < 6 {
-		return nil, .Truncated
+		return nil, .Truncated, nil
 	}
 	cmf, flg := stream[0], stream[1]
 	if cmf & 0x0F != 8 || cmf >> 4 > 7 || (u16(cmf) << 8 | u16(flg)) % 31 != 0 || flg & 0x20 != 0 {
-		return nil, .Bad_Header
+		return nil, .Bad_Header, nil
 	}
 	s := Inflater {
 		input = stream[2:],
 		limit = limit,
 	}
-	reserved, alloc_err := make([dynamic]u8, 0, min(limit, len(stream) * 4 + 1024), allocator)
+	room := expected if expected >= 0 else len(stream) * 2 + 1024
+	s.output, alloc_err = make([dynamic]u8, 0, min(limit, room), allocator)
 	if alloc_err != nil {
-		return nil, .Out_Of_Memory
+		return nil, .Out_Of_Memory, alloc_err
 	}
-	s.output = reserved
 	defer if e != .None {
 		delete(s.output)
+		out = nil
 	}
-	for last: u32 = 0; last == 0; {
-		last = inflate_bits(&s, 1) or_return
-		switch inflate_bits(&s, 2) or_return {
-		case 0:
-			inflate_stored(&s) or_return
-		case 1:
-			inflate_fixed(&s) or_return
-		case 2:
-			inflate_dynamic(&s) or_return
-		case:
-			return nil, .Bad_Block
-		}
+	e = inflate_blocks(&s)
+	if e != .None {
+		return nil, e, s.alloc_err
 	}
 	// Fewer than 8 bits are left over, from the last byte read: the checksum starts at the next.
 	if s.pos + 4 > len(s.input) {
-		return nil, .Truncated
+		return nil, .Truncated, nil
 	}
 	if hash.adler32(s.output[:]) != be32(s.input[s.pos:][:4]) {
-		return nil, .Bad_Checksum
+		return nil, .Bad_Checksum, nil
 	}
 	allocated := ([^]u8)(raw_data(s.output))[:cap(s.output)]
 	exact, shrink_err := shrink(allocated, len(s.output), allocator)
-	if shrink_err != nil {
-		return nil, .Out_Of_Memory
+	if alloc, is_alloc := shrink_err.(runtime.Allocator_Error); is_alloc {
+		return nil, .Out_Of_Memory, alloc
 	}
-	return exact, .None
+	return exact, .None, nil
+}
+
+@(private)
+inflate_blocks :: proc(s: ^Inflater) -> Inflate_Error {
+	for last: u32 = 0; last == 0; {
+		last = inflate_bits(s, 1) or_return
+		switch inflate_bits(s, 2) or_return {
+		case 0:
+			inflate_stored(s) or_return
+		case 1:
+			inflate_fixed(s) or_return
+		case 2:
+			inflate_dynamic(s) or_return
+		case:
+			return .Bad_Block
+		}
+	}
+	return .None
 }
 
 @(private)
@@ -299,14 +319,20 @@ inflate_bits :: proc(s: ^Inflater, need: u32) -> (value: u32, e: Inflate_Error) 
 	return bits & (1 << need - 1), .None
 }
 
+// The output doubles as it fills, but never past the limit, so a stream cannot make it allocate
+// more than the limit allows.
 @(private)
 inflate_put :: proc(s: ^Inflater, b: u8) -> Inflate_Error {
 	if len(s.output) >= s.limit {
 		return .Too_Big
 	}
-	if _, err := append(&s.output, b); err != nil {
-		return .Out_Of_Memory
+	if len(s.output) == cap(s.output) {
+		if err := reserve(&s.output, min(max(2 * cap(s.output), 1024), s.limit)); err != nil {
+			s.alloc_err = err
+			return .Out_Of_Memory
+		}
 	}
+	append(&s.output, b)
 	return .None
 }
 
@@ -421,8 +447,18 @@ inflate_codes :: proc(s: ^Inflater, lengths, distances: ^Huffman) -> Inflate_Err
 	}
 }
 
+// The fixed codes are built once per stream: a stream of empty fixed blocks would otherwise rebuild
+// them for every one of its bits.
 @(private)
 inflate_fixed :: proc(s: ^Inflater) -> Inflate_Error {
+	if !s.fixed_built {
+		build_fixed_codes(s)
+	}
+	return inflate_codes(s, &s.fixed_lengths, &s.fixed_distances)
+}
+
+@(private)
+build_fixed_codes :: proc(s: ^Inflater) {
 	lengths: [DEFLATE_FIXED_LENGTH_CODES]u16
 	for &length, symbol in lengths {
 		switch {
@@ -440,10 +476,9 @@ inflate_fixed :: proc(s: ^Inflater) -> Inflate_Error {
 	for &length in distance_lengths {
 		length = 5
 	}
-	length_code, distance_code: Huffman
-	huffman_construct(&length_code, lengths[:])
-	huffman_construct(&distance_code, distance_lengths[:])
-	return inflate_codes(s, &length_code, &distance_code)
+	huffman_construct(&s.fixed_lengths, lengths[:])
+	huffman_construct(&s.fixed_distances, distance_lengths[:])
+	s.fixed_built = true
 }
 
 // A dynamic block first gives the lengths of a code for code lengths, then with it the code lengths
@@ -497,13 +532,15 @@ inflate_dynamic :: proc(s: ^Inflater) -> Inflate_Error {
 	if lengths[256] == 0 {
 		return .Bad_Block
 	}
-	// Only a code with a single symbol may be incomplete.
+	// A code may only be incomplete when it is a single code of 1 bit, as puff and zlib accept.
 	left := huffman_construct(&length_code, lengths[:length_count])
-	if left < 0 || (left > 0 && length_count - int(length_code.count[0]) != 1) {
+	single := int(length_code.count[0] + length_code.count[1])
+	if left < 0 || (left > 0 && length_count != single) {
 		return .Bad_Block
 	}
 	left = huffman_construct(&distance_code, lengths[length_count:total])
-	if left < 0 || (left > 0 && distance_count - int(distance_code.count[0]) != 1) {
+	single = int(distance_code.count[0] + distance_code.count[1])
+	if left < 0 || (left > 0 && distance_count != single) {
 		return .Bad_Block
 	}
 	return inflate_codes(s, &length_code, &distance_code)

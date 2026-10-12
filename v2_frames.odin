@@ -359,7 +359,7 @@ read_frame :: proc(
 	copy(f.data, f.data[extras:])
 	f.data = shrink(f.data, len(f.data) - extras, allocator) or_return
 	switch {
-	case f.problem == .Too_Short:
+	case f.problem != .None:
 		return
 	case .Encryption in f.format:
 		f.problem = .Encrypted
