@@ -77,7 +77,7 @@ The repository root is the `odid3` package. Colophon imports it by path; the rec
 | `fields.odin` | Typed accessors: the common fields, pictures, user text. |
 | `convert.odin` | Converting a tag between ID3v2.2, 2.3 and 2.4. |
 | `render.odin` | Building the bytes of an ID3v2 tag from the model, with the write options. |
-| `write.odin` | Rebuilding a file in memory or on disk, safely. |
+| `write.odin` | Rebuilding a file in memory or on disk, safely; `write_posix.odin` and `write_windows.odin` hold what differs between systems (the owner, syncing the directory). |
 | `inflate.odin` | Inflating compressed frames (zlib and deflate), within the size they declare. Our own, since `core:compress/zlib` asserts on some damaged streams. |
 | `deflate.odin` | The deflate encoder for compressed frames (see [Decisions](#decisions)). |
 | `tests/` | The `odid3_tests` package: tests through the public API. |

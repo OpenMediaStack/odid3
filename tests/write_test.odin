@@ -3,6 +3,7 @@ package odid3_tests
 import "core:bytes"
 import "core:mem"
 import "core:os"
+import "core:strings"
 import "core:testing"
 
 import odid3 "../"
@@ -214,4 +215,111 @@ write_file_never_loads_the_audio :: proc(t: ^testing.T) {
 	info, stat_err := os.stat(path, context.temp_allocator)
 	testing.expect_value(t, stat_err, nil)
 	testing.expect_value(t, info.size, AUDIO_SIZE - i64(tags.v2.padding))
+}
+
+@(test)
+damage_in_the_file_as_it_is_now :: proc(t: ^testing.T) {
+	clean := read(t, fixture(t, "v23_full.mp3"))
+	defer odid3.destroy(&clean)
+	truncated := fixture(t, "truncated_tag.mp3")
+	_, err := odid3.write_bytes(truncated, &clean, {}, context.temp_allocator)
+	testing.expect_value(t, err, odid3.Error(odid3.Format_Error.Damaged_Tag))
+}
+
+@(test)
+write_file_matches_write_bytes :: proc(t: ^testing.T) {
+	dir := make_temp_dir(t)
+	for name in fixture_names(t) {
+		file := fixture(t, name)
+		tags := read(t, file)
+		defer odid3.destroy(&tags)
+		in_memory, bytes_err := odid3.write_bytes(
+			file,
+			&tags,
+			{replace_damaged = true},
+			context.temp_allocator,
+		)
+		path := copy_fixture(t, dir, name)
+		file_err := odid3.write_file(path, &tags, {replace_damaged = true})
+		same :=
+			bytes_err == nil && file_err == nil && bytes.equal(read_bytes_of(t, path), in_memory)
+		testing.expectf(t, same, "%s: %v, %v", name, bytes_err, file_err)
+	}
+}
+
+@(test)
+write_file_allocation_failures_leave_nothing_behind :: proc(t: ^testing.T) {
+	dir := make_temp_dir(t)
+	path := copy_fixture(t, dir, "v23_full.mp3")
+	before := read_bytes_of(t, path)
+	tags := read(t, before)
+	defer odid3.destroy(&tags)
+	succeeded := false
+	for budget in 0 ..< 64 {
+		failing := Failing{context.allocator, budget}
+		err := odid3.write_file(path, &tags, {}, failing_allocator(&failing))
+		entries, _ := os.read_all_directory_by_path(dir, context.temp_allocator)
+		testing.expectf(t, len(entries) == 1, "budget %d: %d files", budget, len(entries))
+		if err == nil {
+			succeeded = true
+			break
+		}
+		testing.expect(t, bytes.equal(read_bytes_of(t, path), before))
+	}
+	testing.expect(t, succeeded)
+}
+
+@(test)
+long_file_names :: proc(t: ^testing.T) {
+	dir := make_temp_dir(t)
+	name := strings.concatenate(
+		{strings.repeat("é", 118, context.temp_allocator), ".mp3"},
+		context.temp_allocator,
+	)
+	path := join(dir, name)
+	if os.write_entire_file(path, fixture(t, "v23_full.mp3")) != nil {
+		testing.fail_now(t, "cannot create a file with a long name")
+	}
+	tags := read(t, read_bytes_of(t, path))
+	defer odid3.destroy(&tags)
+	testing.expect_value(t, odid3.write_file(path, &tags), nil)
+}
+
+when ODIN_OS != .Windows {
+	@(test)
+	symbolic_links_stay :: proc(t: ^testing.T) {
+		dir := make_temp_dir(t)
+		os.make_directory(join(dir, "music"))
+		os.make_directory(join(dir, "links"))
+		target := join(dir, "music/song.mp3")
+		if os.write_entire_file(target, fixture(t, "v23_full.mp3")) != nil {
+			testing.fail_now(t, "cannot write the target")
+		}
+		link := join(dir, "links/song.mp3")
+		testing.expect_value(t, os.symlink("../music/song.mp3", link), nil)
+
+		tags := read(t, read_bytes_of(t, link))
+		defer odid3.destroy(&tags)
+		tags.v2.version = .None
+		testing.expect_value(t, odid3.write_file(link, &tags), nil)
+		info, _ := os.lstat(link, context.temp_allocator)
+		testing.expect_value(t, info.type, os.File_Type.Symlink)
+		written := read(t, read_bytes_of(t, target))
+		defer odid3.destroy(&written)
+		testing.expect_value(t, written.v2.version, odid3.V2_Version.None)
+	}
+
+	@(test)
+	read_only_files_are_refused :: proc(t: ^testing.T) {
+		dir := make_temp_dir(t)
+		path := copy_fixture(t, dir, "v23_full.mp3")
+		before := read_bytes_of(t, path)
+		testing.expect_value(t, os.chmod(path, {.Read_User, .Read_Group, .Read_Other}), nil)
+		tags := read(t, before)
+		defer odid3.destroy(&tags)
+		testing.expect(t, odid3.write_file(path, &tags) != nil)
+		testing.expect(t, bytes.equal(read_bytes_of(t, path), before))
+		entries, _ := os.read_all_directory_by_path(dir, context.temp_allocator)
+		testing.expect_value(t, len(entries), 1)
+	}
 }
