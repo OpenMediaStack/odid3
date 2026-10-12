@@ -32,6 +32,11 @@ Format_Error :: enum u8 {
 	Not_In_Version,
 	// Writing tags read with skip_picture_data: their pictures were not read.
 	Incomplete_Tag,
+	// Writing over a tag read with damage warnings (DAMAGE_WARNINGS) without
+	// Write_Options.replace_damaged: the bytes that could not be read would be lost.
+	Damaged_Tag,
+	// The file changed while write_file rewrote it: it is left as the other program made it.
+	File_Changed,
 }
 
 // What reading found wrong in a file. The result holds what could be read despite it.

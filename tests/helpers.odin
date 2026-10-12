@@ -186,3 +186,18 @@ frame22 :: proc(id: string, data: []u8) -> []u8 {
 	n := len(data)
 	return concat(transmute([]u8)id, {u8(n >> 16), u8(n >> 8), u8(n)}, data)
 }
+
+// Copies a fixture into dir and returns the path of the copy.
+copy_fixture :: proc(t: ^testing.T, dir, name: string) -> string {
+	path := join(dir, name)
+	if os.write_entire_file(path, fixture(t, name)) != nil {
+		testing.fail_now(t, "cannot copy a fixture")
+	}
+	return path
+}
+
+read_bytes_of :: proc(t: ^testing.T, path: string) -> []u8 {
+	data, err := os.read_entire_file(path, context.temp_allocator)
+	testing.expectf(t, err == nil, "cannot read %s: %v", path, err)
+	return data
+}

@@ -133,7 +133,7 @@ Warning :: enum u8 {
 Warnings :: bit_set[Warning; u16]
 ```
 
-`Truncated_Tag`, `Damaged_Frames`, `Bad_Extended_Header`, `Data_In_Padding`, `Compressed_V22_Tag` and `Too_Many_Frames` mean that bytes of the tag could not be read: rewriting it would lose them, so `write_file` refuses unless `Write_Options.replace_damaged` is set.
+`Truncated_Tag`, `Damaged_Frames`, `Bad_Extended_Header`, `Data_In_Padding`, `Compressed_V22_Tag` and `Too_Many_Frames` mean that bytes of the tag could not be read, and `Second_V2_Tag` that the file holds a tag the model does not: rewriting would lose them, so `write_file` and `write_bytes` refuse unless `Write_Options.replace_damaged` is set. They check the file as it is when they write, too.
 
 ## The ID3v2 model
 
@@ -443,8 +443,11 @@ render_v1 :: proc(v1: ^V1_Tag, allocator := context.allocator) -> ([]u8, runtime
 
 // The whole file rebuilt in memory: the new tags around the kept bytes of file.
 write_bytes :: proc(file: []u8, tags: ^Tags, options := Write_Options{}, allocator := context.allocator) -> (out: []u8, err: Error)
-// Locates the tags of the file as it is now, writes the new file next to it, then renames it
-// over the original. On any error the original is untouched.
+// Locates the tags of the file as it is now, writes the new file next to it (with the original's
+// permissions, and on Unix its owner and group as far as allowed), then renames it over the
+// original. On any error the original is untouched. Through a symbolic link, the target is
+// rewritten. A read-only file is refused; a file that changes meanwhile gives File_Changed.
+// Extended attributes, ACLs and hard links are not carried over.
 write_file :: proc(path: string, tags: ^Tags, options := Write_Options{}, allocator := context.allocator) -> Error
 ```
 
@@ -469,7 +472,8 @@ Format_Error :: enum u8 {
 	Not_In_Version, // a frame flag or a write option the version does not have
 	Not_Decodable, // decode_frame on an encrypted, damaged or skipped frame
 	Bad_Content, // frame bytes that do not follow the frame's layout
-	Damaged_Tag, // writing over a damaged tag without replace_damaged
+	Damaged_Tag, // writing over a damaged tag, or a file with a second tag, without replace_damaged
+	File_Changed, // the file changed while write_file rewrote it: it is left as the other program made it
 	Incomplete_Tag, // writing tags read with skip_picture_data
 }
 
