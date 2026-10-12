@@ -10,8 +10,7 @@ TESTDATA :: #directory + "/../testdata/"
 
 // The bytes of a fixture, allocated with the temp allocator.
 fixture :: proc(t: ^testing.T, name: string, loc := #caller_location) -> []u8 {
-	path := strings.concatenate({TESTDATA, name}, context.temp_allocator)
-	data, err := os.read_entire_file(path, context.temp_allocator)
+	data, err := os.read_entire_file(fixture_path(name), context.temp_allocator)
 	testing.expectf(t, err == nil, "cannot read %s: %v", name, err, loc = loc)
 	return data
 }
@@ -64,4 +63,21 @@ v2_header :: proc(major, flags: u8, size: int) -> []u8 {
 
 zeros :: proc(n: int) -> []u8 {
 	return make([]u8, n, context.temp_allocator)
+}
+
+fixture_path :: proc(name: string) -> string {
+	return strings.concatenate({TESTDATA, name}, context.temp_allocator)
+}
+
+// The names of every MP3 fixture.
+fixture_names :: proc(t: ^testing.T) -> []string {
+	infos, err := os.read_all_directory_by_path(TESTDATA, context.temp_allocator)
+	testing.expectf(t, err == nil, "cannot list the fixtures: %v", err)
+	names := make([dynamic]string, context.temp_allocator)
+	for info in infos {
+		if strings.has_suffix(info.name, ".mp3") {
+			append(&names, info.name)
+		}
+	}
+	return names[:]
 }

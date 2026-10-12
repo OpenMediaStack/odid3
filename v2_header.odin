@@ -19,6 +19,7 @@ Tag_Flag :: enum u8 {
 	Compression, // ID3v2.2
 }
 
+// The flags set in an ID3v2 tag header.
 Tag_Flags :: bit_set[Tag_Flag;u8]
 
 // An ID3v2 tag. Free it with destroy.
@@ -91,7 +92,7 @@ v2_version :: proc(major: u8) -> V2_Version {
 @(private)
 v2_total_size :: proc(h: V2_Header) -> i64 {
 	total := V2_HEADER_SIZE + h.size
-	if v2_version(h.major) == .V2_4 && .Footer in tag_flags(h.major, h.flags) {
+	if .Footer in tag_flags(h.major, h.flags) {
 		total += V2_FOOTER_SIZE
 	}
 	return total

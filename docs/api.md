@@ -105,6 +105,7 @@ Range :: struct {
 Layout :: struct {
 	file_size:   i64,
 	v2:          Range, // the leading ID3v2 tag, header, padding and footer included
+	v2_stacked:  Range, // ID3v2 tags right after the first one, replaced by it on write
 	v2_appended: Range, // an ID3v2.4 tag found at the end through its footer
 	audio:       Range, // the MPEG data, between the tags
 	ape:         Range, // found, never parsed, always kept
@@ -114,7 +115,7 @@ Layout :: struct {
 }
 
 Warning :: enum u8 {
-	Bad_Header, // "ID3" followed by bytes that cannot be an ID3v2 header: kept as unknown bytes
+	Bad_Header, // "ID3" then a version below 2 or 0xFF, or a size that is not syncsafe: kept as unknown bytes
 	Truncated_Tag, // the ID3v2 tag claims more bytes than the file holds
 	Damaged_Frames, // a frame header cannot be right: the frames after it are lost
 	Bad_Extended_Header,

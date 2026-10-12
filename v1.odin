@@ -7,7 +7,7 @@ V1_Version :: enum u8 {
 	V1_1,
 }
 
-// An ID3v1 tag.
+// An ID3v1 tag: the last 128 bytes of a file.
 V1_Tag :: struct {
 	version: V1_Version,
 }

@@ -12,6 +12,7 @@ Range :: struct {
 Layout :: struct {
 	file_size:   i64,
 	v2:          Range, // the leading ID3v2 tag: header, frames, padding and footer
+	v2_stacked:  Range, // ID3v2 tags right after the first one, replaced by it on write
 	audio:       Range, // what lies between the tags, kept byte for byte on write
 	ape:         Range, // found, never read
 	lyrics3:     Range, // found, never read
@@ -72,7 +73,7 @@ locate_v2 :: proc(
 	switch {
 	case status == .Absent:
 		return 0, {}, nil
-	case status == .Bad:
+	case status == .Bad || header.major < 2:
 		warnings^ += {.Bad_Header}
 		return 0, {}, nil
 	case v2_version(header.major) == .None:
@@ -85,11 +86,15 @@ locate_v2 :: proc(
 		end = src.size
 	}
 	layout.v2 = {0, end}
-	end = skip_stacked_tags(src, end, warnings) or_return
-	return end, header, nil
+	stacked_end := skip_stacked_tags(src, end, warnings) or_return
+	if stacked_end > end {
+		layout.v2_stacked = {end, stacked_end - end}
+	}
+	return stacked_end, header, nil
 }
 
-// Some taggers write a new tag in front of the old one instead of replacing it.
+// Some taggers write a new tag in front of the old one instead of replacing it. A stacked tag that
+// would run past the end of the file is not one: its bytes stay with the audio.
 @(private)
 skip_stacked_tags :: proc(
 	src: ^Source,
@@ -104,11 +109,12 @@ skip_stacked_tags :: proc(
 	for _ in 0 ..< MAX_STACKED_TAGS {
 		head := source_bytes(src, end, buf[:]) or_return
 		header, status := parse_v2_header(head)
-		if status != .Valid {
+		next := end + v2_total_size(header)
+		if status != .Valid || next > src.size {
 			break
 		}
 		warnings^ += {.Second_V2_Tag}
-		end = min(end + v2_total_size(header), src.size)
+		end = next
 	}
 	return
 }
@@ -163,11 +169,13 @@ find_ape :: proc(src: ^Source, start, end: i64) -> (r: Range, err: Error) {
 	}
 	size := i64(le32(footer[12:16]))
 	offset := end - size
-	if le32(footer[20:24]) & APE_HAS_HEADER != 0 {
-		offset -= APE_FOOTER_SIZE
-	}
 	if size < APE_FOOTER_SIZE || offset < start {
-		offset = end - APE_FOOTER_SIZE
+		return {end - APE_FOOTER_SIZE, APE_FOOTER_SIZE}, nil
+	}
+	if le32(footer[20:24]) & APE_HAS_HEADER != 0 && offset - APE_FOOTER_SIZE >= start {
+		if has_magic(src, offset - APE_FOOTER_SIZE, "APETAGEX") or_return {
+			offset -= APE_FOOTER_SIZE
+		}
 	}
 	return {offset, end - offset}, nil
 }

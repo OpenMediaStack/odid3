@@ -10,7 +10,8 @@ Error :: union #shared_nil {
 
 // What reading found wrong in a file. The result holds what could be read despite it.
 Warning :: enum u8 {
-	// "ID3" followed by bytes that cannot be an ID3v2 header: they are kept as unknown bytes.
+	// "ID3" followed by bytes that cannot be an ID3v2 header (a version below 2 or 0xFF, a size
+	// that is not syncsafe): they are kept as unknown bytes.
 	Bad_Header,
 	// The ID3v2 tag claims more bytes than the file holds.
 	Truncated_Tag,
@@ -20,4 +21,5 @@ Warning :: enum u8 {
 	Second_V2_Tag,
 }
 
+// Every warning reading raised.
 Warnings :: bit_set[Warning;u16]

@@ -132,7 +132,8 @@ trailing_tags :: proc(t: ^testing.T) {
 		tags = read(t, data)
 		size = i64(len(data))
 		expect_range(t, name, tags.layout.lyrics3, audio_size, size - 128 - audio_size)
-		testing.expect(t, bytes.has_prefix(slice_of(data, tags.layout.lyrics3), {'L', 'Y'}))
+		lyrics3 := slice_of(data, tags.layout.lyrics3)
+		testing.expect(t, bytes.has_prefix(lyrics3, transmute([]u8)string("LYRICSBEGIN")))
 		expect_range(t, name, tags.layout.v1, size - 128, 128)
 		odid3.destroy(&tags)
 	}
@@ -189,6 +190,16 @@ tag_flags_by_version :: proc(t: ^testing.T) {
 }
 
 @(test)
+truncated_tag_with_a_footer :: proc(t: ^testing.T) {
+	data := concat(v2_header(4, 0x10, 1000), zeros(40))
+	tags := read(t, data)
+	defer odid3.destroy(&tags)
+	testing.expect_value(t, tags.warnings, odid3.Warnings{.Truncated_Tag})
+	testing.expect_value(t, tags.v2.flags, odid3.Tag_Flags{.Footer})
+	expect_range(t, "v2", tags.layout.v2, 0, 50)
+}
+
+@(test)
 truncated_tag :: proc(t: ^testing.T) {
 	data := concat(v2_header(3, 0, 1000), zeros(40))
 	tags := read(t, data)
@@ -210,7 +221,10 @@ headers_that_cannot_be_right :: proc(t: ^testing.T) {
 	audio := zeros(200)
 	not_syncsafe := concat(transmute([]u8)string("ID3"), {3, 0, 0, 0, 0, 0x80, 0})
 	bad_version := concat(transmute([]u8)string("ID3"), {0xFF, 0, 0, 0, 0, 0, 10})
-	for header in ([][]u8{not_syncsafe, bad_version}) {
+	bad_revision := concat(transmute([]u8)string("ID3"), {3, 0xFF, 0, 0, 0, 0, 10})
+	version_0 := v2_header(0, 0, 10)
+	version_1 := v2_header(1, 0, 10)
+	for header in ([][]u8{not_syncsafe, bad_version, bad_revision, version_0, version_1}) {
 		data := concat(header, audio)
 		tags := read(t, data)
 		defer odid3.destroy(&tags)
@@ -242,7 +256,37 @@ second_tag_after_the_first :: proc(t: ^testing.T) {
 	testing.expect_value(t, tags.warnings, odid3.Warnings{.Second_V2_Tag})
 	testing.expect_value(t, tags.v2.version, odid3.V2_Version.V2_4)
 	expect_range(t, "v2", tags.layout.v2, 0, 30)
+	expect_range(t, "stacked", tags.layout.v2_stacked, 30, 40)
 	expect_range(t, "audio", tags.layout.audio, 70, i64(len(audio)))
+}
+
+@(test)
+second_tag_larger_than_the_file_is_not_a_tag :: proc(t: ^testing.T) {
+	first := concat(v2_header(3, 0, 20), zeros(20))
+	lying := v2_header(3, 0, 5000)
+	audio := fixture(t, "no_tag.mp3")
+	data := concat(first, lying, audio)
+	tags := read(t, data)
+	defer odid3.destroy(&tags)
+	testing.expect_value(t, tags.warnings, odid3.Warnings{})
+	expect_range(t, "stacked", tags.layout.v2_stacked, 0, 0)
+	expect_range(t, "audio", tags.layout.audio, 30, i64(len(data)) - 30)
+}
+
+@(test)
+stacked_tags_stop_after_sixteen :: proc(t: ^testing.T) {
+	tag := concat(v2_header(3, 0, 0))
+	parts := make([dynamic][]u8, context.temp_allocator)
+	for _ in 0 ..< 20 {
+		append(&parts, tag)
+	}
+	append(&parts, zeros(50))
+	data := concat(..parts[:])
+	tags := read(t, data)
+	defer odid3.destroy(&tags)
+	expect_range(t, "v2", tags.layout.v2, 0, 10)
+	expect_range(t, "stacked", tags.layout.v2_stacked, 10, 160)
+	expect_range(t, "audio", tags.layout.audio, 170, i64(len(data)) - 170)
 }
 
 @(test)

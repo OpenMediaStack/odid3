@@ -40,9 +40,16 @@ read_source :: proc(src: ^Source, allocator: runtime.Allocator) -> (tags: Tags, 
 // Frees what reading allocated and resets the value.
 destroy :: proc {
 	destroy_tags,
+	destroy_tag,
 }
 
 // Frees what read_bytes allocated in tags and resets it.
 destroy_tags :: proc(tags: ^Tags) {
+	destroy_tag(&tags.v2)
 	tags^ = {}
+}
+
+// Frees what an ID3v2 tag holds and resets it.
+destroy_tag :: proc(tag: ^Tag) {
+	tag^ = {}
 }

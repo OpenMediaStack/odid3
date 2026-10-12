@@ -269,10 +269,11 @@ printf '\310' | dd of=v1_genre_out_of_range.mp3 bs=1 seek=$((size - 1)) conv=not
 } >lyrics3v1_v1.mp3
 
 # lyrics3v2_v1.mp3: a Lyrics3 v2 tag before the ID3v1.0 tag of v1_0_ascii.mp3. After
-# "LYRICSBEGIN" come fields (a 3 letter ID, a 5 digit size, the data), then the size of everything
-# from "LYRICSBEGIN" on in 6 digits, then "LYRICS200".
+# "LYRICSBEGIN" come fields (a 3 letter ID, a 5 digit size, the data): IND says lyrics and
+# timestamps are present, LYR holds them. Then the size of everything from "LYRICSBEGIN" on in 6
+# digits, then "LYRICS200".
 # Expect: the ID3v1 values of v1_0_ascii.mp3; the Lyrics3 bytes found and kept, not read.
-lyrics3v2='LYRICSBEGININD0000210LYR00022[00:01]First line'
+lyrics3v2='LYRICSBEGININD0000211LYR00017[00:01]First line'
 {
 	cat no_tag.mp3
 	printf '%s%06dLYRICS200' "$lyrics3v2" "${#lyrics3v2}"
