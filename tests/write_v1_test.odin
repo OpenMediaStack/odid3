@@ -252,3 +252,41 @@ sync_v1_allocation_failures_leak_nothing :: proc(t: ^testing.T) {
 		testing.expectf(t, succeeded, "%s never succeeded", name)
 	}
 }
+
+@(test)
+unchanged_v1_tags_keep_their_bytes :: proc(t: ^testing.T) {
+	junk := make([]u8, 128, context.temp_allocator)
+	copy(junk, "TAGTitle\x00after the end")
+	copy(junk[93:], "2019")
+	junk[127] = 17
+	files := [?][]u8 {
+		fixture(t, "v1_utf8.mp3"),
+		fixture(t, "v1_utf8_cut.mp3"),
+		fixture(t, "v1_enhanced.mp3"),
+		fixture(t, "lyrics3v2_v1.mp3"),
+		fixture(t, "v23_v1_long_title.mp3"),
+		concat(fixture(t, "no_tag.mp3"), junk),
+	}
+	for file, i in files {
+		tags := read(t, file)
+		defer odid3.destroy(&tags)
+		out, err := odid3.write_bytes(file, &tags, {}, context.temp_allocator)
+		testing.expect_value(t, err, nil)
+		start := tags.layout.v1.offset
+		if tags.layout.v1_enhanced.size > 0 {
+			start = tags.layout.v1_enhanced.offset
+		}
+		kept := file[start:]
+		testing.expectf(t, bytes.equal(out[len(out) - len(kept):], kept), "file %d", i)
+	}
+
+	// A changed tag is rendered: UTF-8 text becomes Latin-1.
+	file := fixture(t, "v1_utf8.mp3")
+	tags := read(t, file)
+	defer odid3.destroy(&tags)
+	tags.v1.genre = 17
+	out, err := odid3.write_bytes(file, &tags, {}, context.temp_allocator)
+	testing.expect_value(t, err, nil)
+	rendered := odid3.render_v1(&tags.v1, context.temp_allocator)
+	testing.expect(t, bytes.equal(out[len(out) - len(rendered):], rendered))
+}

@@ -41,6 +41,8 @@ writing_over_every_fixture :: proc(t: ^testing.T) {
 			{tags.layout.audio, again.layout.audio},
 			{tags.layout.ape, again.layout.ape},
 			{tags.layout.lyrics3, again.layout.lyrics3},
+			{tags.layout.v1_enhanced, again.layout.v1_enhanced},
+			{tags.layout.v1, again.layout.v1},
 		}
 		for part in parts {
 			testing.expectf(

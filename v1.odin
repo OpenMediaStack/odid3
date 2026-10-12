@@ -221,6 +221,29 @@ V1_Policy :: enum u8 {
 	Never,
 }
 
+@(private)
+same_v1 :: proc(a, b: ^V1_Tag) -> bool {
+	if a.version != b.version || a.track != b.track || a.genre != b.genre {
+		return false
+	}
+	if a.title != b.title || a.artist != b.artist || a.album != b.album {
+		return false
+	}
+	if a.year != b.year || a.comment != b.comment {
+		return false
+	}
+	ea, a_enhanced := a.enhanced.?
+	eb, b_enhanced := b.enhanced.?
+	if a_enhanced != b_enhanced {
+		return false
+	}
+	if !a_enhanced {
+		return true
+	}
+	same_times := ea.start_time == eb.start_time && ea.end_time == eb.end_time
+	return ea.speed == eb.speed && ea.genre == eb.genre && same_times
+}
+
 // The ID3v1 bytes of a tag: 128 bytes, or 355 when it holds an Enhanced TAG, which comes first;
 // nil when its version is .None. Text is written in Latin-1, a character outside it as '?', cut to
 // its field. An ID3v1.1 tag without a track is the same bytes as ID3v1.0 and is written as such.
