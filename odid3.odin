@@ -32,3 +32,6 @@ enum values (each Warning, Format_Error and Write_Options field): read those in 
 through OLS.
 */
 package odid3
+
+// The version of odid3, following semantic versioning; its git tag is "v" followed by it.
+VERSION :: "1.0.0"
