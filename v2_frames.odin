@@ -48,6 +48,8 @@ Frame_Problem :: enum u8 {
 	Too_Short,
 	// Read with skip_picture_data: data is nil.
 	Skipped_Picture,
+	// The data length indicator does not match the data: data holds what was decoded.
+	Bad_Data_Length,
 }
 
 // The first frame with this ID at or after start.
@@ -70,14 +72,59 @@ destroy_frame :: proc(frame: ^Frame) {
 @(private)
 FRAME_HEADER_SIZE :: 10
 
-// The frames and padding of a tag, as positions in src.
+// The frames and padding of a tag, as positions in src. When unsynchronisation was undone for the
+// whole tag, src holds the decoded bytes: base is where they start in the file, and removed lists
+// the decoded positions where a byte was taken out, to find frames in the file again.
 @(private)
 Body :: struct {
-	src:         ^Source,
-	start:       i64,
-	end:         i64,
-	truncated:   bool,
-	plain_sizes: bool, // ID3v2.4: a frame size was a plain integer, so later ones probably are
+	src:           ^Source,
+	start:         i64,
+	end:           i64,
+	truncated:     bool,
+	plain_sizes:   bool, // ID3v2.4: a frame size was a plain integer, so later ones probably are
+	base:          i64,
+	removed:       []i64,
+	unsync_frames: bool, // ID3v2.4: the tag header says every frame is unsynchronised
+}
+
+@(private)
+file_offset :: proc(body: ^Body, pos: i64) -> i64 {
+	low, high := 0, len(body.removed)
+	for low < high {
+		mid := (low + high) / 2
+		if body.removed[mid] <= pos {
+			low = mid + 1
+		} else {
+			high = mid
+		}
+	}
+	return body.base + pos + i64(low)
+}
+
+// Unsynchronisation keeps a tag from holding a false MPEG frame sync (0xFF then a byte of 0xE0 or
+// more) that an old player could mistake for audio: writing puts a 0x00 after every 0xFF followed
+// by such a byte or by 0x00, and reading takes out the 0x00 after every 0xFF. Works in place;
+// removed, when given, gets the positions of the output where a byte was taken out.
+@(private)
+undo_unsynchronisation :: proc(
+	data: []u8,
+	removed: ^[dynamic]i64 = nil,
+) -> (
+	out: []u8,
+	err: Error,
+) {
+	n := 0
+	for i := 0; i < len(data); i += 1 {
+		data[n] = data[i]
+		n += 1
+		if data[i] == 0xFF && i + 1 < len(data) && data[i + 1] == 0 {
+			if removed != nil {
+				append(removed, i64(n)) or_return
+			}
+			i += 1
+		}
+	}
+	return data[:n], nil
 }
 
 // What can follow a frame.
@@ -132,7 +179,7 @@ read_frames :: proc(tag: ^Tag, body: ^Body, options: Read_Options, warnings: ^Wa
 			warnings^ += {.Bad_Frame_Ids}
 		}
 		frame := read_frame(body, pos, h, tag.version, options, tag.allocator) or_return
-		if frame.problem == .Too_Short {
+		if frame.problem == .Too_Short || frame.problem == .Bad_Data_Length {
 			warnings^ += {.Frame_Problems}
 		}
 		if _, append_err := append(&tag.frames, frame); append_err != nil {
@@ -248,7 +295,7 @@ read_frame :: proc(
 	err: Error,
 ) {
 	f.allocator = allocator
-	f.offset = pos
+	f.offset = file_offset(body, pos)
 	f.size = int(h.size)
 	f.stored_flags = h.flags
 	f.status = frame_status(version, h.flags[0])
@@ -265,9 +312,18 @@ read_frame :: proc(
 	}
 	f.data = make([]u8, h.size, allocator) or_return
 	source_read(body.src, pos + FRAME_HEADER_SIZE, f.data) or_return
+	// ID3v2.4 unsynchronises everything after the frame header, the bytes the flags add included.
+	if version == .V2_4 && (.Unsynchronisation in f.format || body.unsync_frames) {
+		f.data = undo_unsynchronisation(f.data) or_return
+	}
 	extras := split_frame_extras(&f, version)
 	copy(f.data, f.data[extras:])
 	f.data = f.data[:len(f.data) - extras]
+	if f.problem == .None && f.data_length >= 0 && .Compression not_in f.format {
+		if f.data_length != len(f.data) {
+			f.problem = .Bad_Data_Length
+		}
+	}
 	return
 }
 
