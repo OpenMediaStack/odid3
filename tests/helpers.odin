@@ -81,3 +81,20 @@ fixture_names :: proc(t: ^testing.T) -> []string {
 	}
 	return names[:]
 }
+
+// A new temporary directory, removed when the test ends.
+make_temp_dir :: proc(t: ^testing.T) -> string {
+	dir, err := os.make_directory_temp("", "odid3-*", context.allocator)
+	testing.expectf(t, err == nil, "cannot create a temporary directory: %v", err)
+	testing.cleanup(t, proc(data: rawptr) {
+			dir := (^string)(data)
+			os.remove_all(dir^)
+			delete(dir^)
+			free(dir)
+		}, new_clone(dir))
+	return dir
+}
+
+join :: proc(dir, name: string) -> string {
+	return strings.concatenate({dir, "/", name}, context.temp_allocator)
+}

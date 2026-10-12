@@ -1,6 +1,7 @@
 package odid3
 
 import "base:runtime"
+import "core:os"
 
 // The tags of a file and where they are. Free it with destroy.
 Tags :: struct {
@@ -14,6 +15,15 @@ Tags :: struct {
 // destroy. A damaged tag gives what could be read, and warnings.
 read_bytes :: proc(data: []u8, allocator := context.allocator) -> (tags: Tags, err: Error) {
 	src := memory_source(data)
+	return read_source(&src, allocator)
+}
+
+// Reads the tags of the file at path. Only the tags are read, never the audio between them. Free
+// the result with destroy. A damaged tag gives what could be read, and warnings.
+read_file :: proc(path: string, allocator := context.allocator) -> (tags: Tags, err: Error) {
+	f := os.open(path) or_return
+	defer os.close(f)
+	src := file_source(f) or_return
 	return read_source(&src, allocator)
 }
 
@@ -43,7 +53,7 @@ destroy :: proc {
 	destroy_tag,
 }
 
-// Frees what read_bytes allocated in tags and resets it.
+// Frees what read_bytes or read_file allocated in tags and resets it.
 destroy_tags :: proc(tags: ^Tags) {
 	destroy_tag(&tags.v2)
 	tags^ = {}
