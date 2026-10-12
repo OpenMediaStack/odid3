@@ -227,6 +227,13 @@ ffmpeg "${silence[@]}" "${v1_only[@]}" \
 	-metadata TPE1="Cut in the middle" \
 	v1_utf8_cut.mp3
 
+# v1_utf8_cut_accents.mp3: a UTF-8 title with accents, cut by the 30 byte limit inside its last
+# character: "Crème brûlée, à la françé" leaves c3 of the final "é".
+# Expect: title "Crème brûlée, à la franç" (the cut character dropped).
+ffmpeg "${silence[@]}" "${v1_only[@]}" \
+	-metadata TIT2="Crème brûlée, à la françé" \
+	v1_utf8_cut_accents.mp3
+
 # v1_genre_out_of_range.mp3: genre byte 200, past the end of every genre list. ffmpeg cannot write
 # it, so the last byte is patched.
 # Expect: title "Unknown genre", genre number 200 with no name.
