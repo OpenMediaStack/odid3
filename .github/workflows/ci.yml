@@ -72,7 +72,6 @@ jobs:
         run: >-
           odin test tests -vet -strict-style -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
           -define:ODID3_INTEROP=true -define:ODID3_PYTHON="$RUNNER_TEMP/venv/bin/python"
-          -define:ODIN_TEST_NAMES=odid3_tests.files_written_are_read_by_ffprobe_and_mutagen
 
   format:
     name: Format

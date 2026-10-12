@@ -2,6 +2,7 @@ package odid3_tests
 
 import "core:bytes"
 import "core:math/rand"
+import "core:os"
 import "core:testing"
 
 import odid3 "../"
@@ -36,21 +37,27 @@ writing_over_every_fixture :: proc(t: ^testing.T) {
 		// Frames kept as stored (a compression bomb) still have their problem.
 		kept := tags.warnings & {.Frame_Problems}
 		testing.expectf(t, again.warnings <= kept, "%s written: %v", name, again.warnings)
-		testing.expectf(
-			t,
-			bytes.equal(
-				slice_of(written, again.layout.audio),
-				slice_of(original, tags.layout.audio),
-			),
-			"%s: the audio changed",
-			name,
-		)
+		parts := [?][2]odid3.Range {
+			{tags.layout.audio, again.layout.audio},
+			{tags.layout.ape, again.layout.ape},
+			{tags.layout.lyrics3, again.layout.lyrics3},
+		}
+		for part in parts {
+			testing.expectf(
+				t,
+				bytes.equal(slice_of(written, part[1]), slice_of(original, part[0])),
+				"%s: kept bytes changed",
+				name,
+			)
+		}
 		testing.expect_value(t, len(again.v2.frames), len(tags.v2.frames))
 	}
 }
 
 @(test)
-writing_damaged_bytes :: proc(t: ^testing.T) {
+writing_damaged_files :: proc(t: ^testing.T) {
+	dir := make_temp_dir(t)
+	path := join(dir, "damaged.mp3")
 	for name in fixture_names(t) {
 		original := fixture(t, name)
 		data := concat(original)
@@ -67,15 +74,33 @@ writing_damaged_bytes :: proc(t: ^testing.T) {
 			damaged := data[:n]
 			tags := read(t, damaged)
 			defer odid3.destroy(&tags)
+			put_file(t, path, damaged)
+			if err := odid3.write_file(path, &tags, {}); err != nil {
+				expect_untouched(t, dir, path, damaged, name)
+			}
+
 			out, err := odid3.write_bytes(
 				damaged,
 				&tags,
 				{replace_damaged = true},
-				context.temp_allocator,
+				context.allocator,
+			)
+			defer delete(out)
+			put_file(t, path, damaged)
+			file_err := odid3.write_file(path, &tags, {replace_damaged = true})
+			testing.expectf(
+				t,
+				file_err == err,
+				"%s: write_file %v, write_bytes %v",
+				name,
+				file_err,
+				err,
 			)
 			if err != nil {
+				expect_untouched(t, dir, path, damaged, name)
 				continue
 			}
+			testing.expectf(t, bytes.equal(read_bytes_of(t, path), out), "%s: files differ", name)
 			again := read(t, out)
 			defer odid3.destroy(&again)
 			testing.expectf(
@@ -89,4 +114,17 @@ writing_damaged_bytes :: proc(t: ^testing.T) {
 			)
 		}
 	}
+}
+
+put_file :: proc(t: ^testing.T, path: string, data: []u8) {
+	if os.write_entire_file(path, data) != nil {
+		testing.fail_now(t, "cannot write the file")
+	}
+}
+
+// A write that failed left the file as it was, and no temporary file next to it.
+expect_untouched :: proc(t: ^testing.T, dir, path: string, want: []u8, name: string) {
+	testing.expectf(t, bytes.equal(read_bytes_of(t, path), want), "%s: changed on failure", name)
+	entries, _ := os.read_all_directory_by_path(dir, context.temp_allocator)
+	testing.expectf(t, len(entries) == 1, "%s: %d files left behind", name, len(entries))
 }
