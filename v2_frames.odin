@@ -58,7 +58,8 @@ Frame_Problem :: enum u8 {
 	Bad_Unsynchronisation,
 	// Encrypted: data holds the bytes as stored, unsynchronisation undone.
 	Encrypted,
-	// Compressed, but the zlib stream is damaged or inflates well past its declared size: data
+	// Compressed, but the zlib stream is damaged or inflates well past its declared size, or the
+	// frame sits in a CHAP or CTOC that was compressed itself or not read from the file: data
 	// holds the bytes as stored, unsynchronisation undone.
 	Bad_Compression,
 }
@@ -111,6 +112,7 @@ Body :: struct {
 	base:          i64,
 	removed:       []u32,
 	unsync_frames: bool, // ID3v2.4: the tag header says every frame is unsynchronised
+	no_inflation:  bool, // frames in a CHAP or CTOC whose own bytes came from inflation
 }
 
 @(private)
@@ -400,6 +402,9 @@ read_frame :: proc(
 	case .Encryption in f.format:
 		f.problem = .Encrypted
 		return
+	case .Compression in f.format && body.no_inflation:
+		f.problem = .Bad_Compression
+		return
 	case .Compression in f.format:
 		inflated, ok := inflate_frame(f.data, i64(f.data_length), allocator) or_return
 		if !ok {
@@ -530,4 +535,41 @@ read_padding :: proc(tag: ^Tag, body: ^Body, start: i64, warnings: ^Warnings) ->
 		pos += i64(len(chunk))
 	}
 	return nil
+}
+
+// Reads the frames inside a CHAP or CTOC frame, laid out as in a tag of the same version. Their
+// offset is -1: they are not read straight from the file. Inflating frames whose bytes were
+// inflated already would let a few bytes of the file grow without bound, so they are only inflated
+// when parent comes straight from the file, compressed neither itself nor as part of another frame.
+@(private)
+read_embedded_frames :: proc(
+	data: []u8,
+	parent: ^Frame,
+	version: V2_Version,
+	allocator: runtime.Allocator,
+) -> (
+	frames: [dynamic]Frame,
+	warnings: Warnings,
+	err: Error,
+) {
+	src := memory_source(data)
+	body := Body {
+		src          = &src,
+		end          = i64(len(data)),
+		version      = version,
+		no_inflation = parent.offset < 0 || .Compression in parent.format,
+	}
+	tag := Tag {
+		version   = version,
+		frames    = make([dynamic]Frame, allocator),
+		allocator = allocator,
+	}
+	if err = read_frames(&tag, &body, {}, &warnings); err != nil {
+		destroy_tag(&tag)
+		return nil, {}, err
+	}
+	for &f in tag.frames {
+		f.offset = -1
+	}
+	return tag.frames, warnings, nil
 }

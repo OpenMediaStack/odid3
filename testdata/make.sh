@@ -187,6 +187,20 @@ ffmpeg "${silence[@]}" -id3v2_version 4 -write_id3v1 0 \
 	-metadata album="Ελληνικά" \
 	v24_unicode.mp3
 
+# v23_chapters.mp3, v24_chapters.mp3: chapters written by ffmpeg from an ffmetadata file: a CTOC
+# frame ("toc", top level and ordered, listing "ch0" and "ch1") and a CHAP frame per chapter, each
+# holding a TIT2 frame.
+# Expect: chapter "ch0" from 0 to 50 ms titled "Intro", chapter "ch1" from 50 to 100 ms titled
+#   "Outro", byte offsets unused (0xFFFFFFFF), title "With chapters".
+printf ';FFMETADATA1\ntitle=With chapters\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=50\ntitle=Intro\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=50\nEND=100\ntitle=Outro\n' >chapters.txt
+for version in 3 4; do
+	ffmpeg -v error -y -f lavfi -i anullsrc=r=44100:cl=mono -i chapters.txt \
+		-map 0:a -map_metadata 1 -map_chapters 1 -t 0.1 \
+		-fflags +bitexact -flags:a +bitexact -write_xing 0 \
+		-id3v2_version $version -write_id3v1 0 v2${version}_chapters.mp3
+done
+rm chapters.txt
+
 # v1_0_ascii.mp3: ID3v1.0, every field filled, the comment uses all 30 bytes. Offset 125 is not 0,
 # so this is ID3v1.0 and there is no track number.
 # Expect: title "Plain ASCII title", artist "Plain ASCII artist", album "Plain ASCII album",
@@ -510,7 +524,7 @@ printf 'not an mp3' >garbage.mp3
 
 for fixture in ./*.mp3; do
 	probe="ffprobe/$(basename "$fixture" .mp3).txt"
-	if ! ffprobe -v error -show_format -show_streams -of flat "$fixture" >"$probe" 2>/dev/null; then
+	if ! ffprobe -v error -show_format -show_streams -show_chapters -of flat "$fixture" >"$probe" 2>/dev/null; then
 		rm -f "$probe"
 	fi
 done

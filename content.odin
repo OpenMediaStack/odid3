@@ -16,6 +16,8 @@ Frame_Content :: union {
 	Popularimeter,
 	Play_Counter,
 	Private,
+	Chapter,
+	Table_Of_Contents,
 	Binary,
 }
 
@@ -111,13 +113,38 @@ Private :: struct {
 	data:  []u8,
 }
 
+// CHAP, from the ID3v2 chapter addendum (ID3v2.3 and 2.4): a part of the file, with frames of its
+// own, such as a TIT2 title. The frames belong to the content and go with it on destroy; decode
+// them with the version of the tag, like the tag's own frames.
+Chapter :: struct {
+	element_id:   string,
+	start_ms:     u32,
+	end_ms:       u32,
+	start_offset: u32, // in bytes from the start of the file; 0xFFFFFFFF when unused
+	end_offset:   u32,
+	frames:       [dynamic]Frame, // offset -1
+	warnings:     Warnings, // what reading the frames found wrong
+}
+
+// CTOC, from the ID3v2 chapter addendum: a table listing chapters, or other tables, by element ID.
+// Its frames are like a Chapter's.
+Table_Of_Contents :: struct {
+	element_id: string,
+	top_level:  bool,
+	ordered:    bool,
+	children:   []string,
+	frames:     [dynamic]Frame, // offset -1
+	warnings:   Warnings,
+}
+
 // A frame odid3 does not decode: its data, copied.
 Binary :: struct {
 	data: []u8,
 }
 
 // Decodes the content of a frame; version is the version of its tag, which decides whether a text
-// frame holds several values (ID3v2.4). The content copies what it needs from the frame and belongs
+// frame holds several values (ID3v2.4) and how the frames inside CHAP and CTOC are laid out. The
+// content copies what it needs from the frame and belongs
 // to the caller, who frees it with destroy and the same allocator. A frame whose data is not its
 // content (encrypted, compressed but not inflated, skipped, too short) gives .Not_Decodable; data
 // that does not follow the frame's layout gives .Bad_Content.
@@ -166,6 +193,10 @@ decode_frame :: proc(
 	case id == "PRIV":
 		owner, private := decode_owned_bytes(data, allocator) or_return
 		content = Private{owner, private}
+	case id == "CHAP":
+		content = decode_chapter(frame, version, allocator) or_return
+	case id == "CTOC":
+		content = decode_table_of_contents(frame, version, allocator) or_return
 	case:
 		content = Binary{clone_bytes(data, allocator) or_return}
 	}
@@ -201,10 +232,25 @@ destroy_content :: proc(content: ^Frame_Content, allocator := context.allocator)
 	case Private:
 		delete(c.owner, allocator)
 		delete(c.data, allocator)
+	case Chapter:
+		delete(c.element_id, allocator)
+		destroy_frames(&c.frames)
+	case Table_Of_Contents:
+		delete(c.element_id, allocator)
+		delete_strings(c.children, allocator)
+		destroy_frames(&c.frames)
 	case Binary:
 		delete(c.data, allocator)
 	}
 	content^ = nil
+}
+
+@(private)
+destroy_frames :: proc(frames: ^[dynamic]Frame) {
+	for &f in frames {
+		destroy_frame(&f)
+	}
+	delete(frames^)
 }
 
 @(private)
@@ -456,6 +502,73 @@ decode_owned_bytes :: proc(
 	if err != nil {
 		delete(owner, allocator)
 	}
+	return
+}
+
+// The element ID in Latin-1 ended by a NUL, the start and end times in milliseconds, the start and
+// end byte offsets, then frames.
+@(private)
+decode_chapter :: proc(
+	frame: ^Frame,
+	version: V2_Version,
+	allocator: runtime.Allocator,
+) -> (
+	c: Chapter,
+	err: Error,
+) {
+	id, rest, terminated := split_terminated(.Latin1, frame.data)
+	if !terminated || len(rest) < 16 {
+		return {}, .Bad_Content
+	}
+	c.start_ms = be32(rest[0:4])
+	c.end_ms = be32(rest[4:8])
+	c.start_offset = be32(rest[8:12])
+	c.end_offset = be32(rest[12:16])
+	c.element_id = decode_latin1(id, allocator) or_return
+	c.frames, c.warnings, err = read_embedded_frames(rest[16:], frame, version, allocator)
+	if err != nil {
+		delete(c.element_id, allocator)
+		return {}, err
+	}
+	return
+}
+
+// The element ID ended by a NUL, flags (0x02 top level, 0x01 ordered), the number of children,
+// their element IDs each ended by a NUL, then frames.
+@(private)
+decode_table_of_contents :: proc(
+	frame: ^Frame,
+	version: V2_Version,
+	allocator: runtime.Allocator,
+) -> (
+	toc: Table_Of_Contents,
+	err: Error,
+) {
+	id, rest, terminated := split_terminated(.Latin1, frame.data)
+	if !terminated || len(rest) < 2 {
+		return {}, .Bad_Content
+	}
+	toc.top_level = rest[0] & 0x02 != 0
+	toc.ordered = rest[0] & 0x01 != 0
+	count := int(rest[1])
+	rest = rest[2:]
+	defer if err != nil {
+		content := Frame_Content(toc)
+		destroy_content(&content, allocator)
+		toc = {}
+	}
+	toc.element_id = decode_latin1(id, allocator) or_return
+	toc.children = make([]string, count, allocator) or_return
+	for &child in toc.children {
+		text: []u8
+		child_terminated: bool
+		text, rest, child_terminated = split_terminated(.Latin1, rest)
+		if !child_terminated {
+			return toc, .Bad_Content
+		}
+		child = decode_latin1(text, allocator) or_return
+	}
+	toc.frames, toc.warnings = read_embedded_frames(rest, frame, version, allocator) or_return
 	return
 }
 
