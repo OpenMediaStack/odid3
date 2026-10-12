@@ -130,9 +130,7 @@ render_frame :: proc(out: ^[dynamic]u8, f: ^Frame, version: V2_Version) -> Error
 	if is_new && !is_frame_id(transmute([]u8)f.id) {
 		return .Bad_Frame_Id
 	}
-	lied := f.problem == .Bad_Unsynchronisation && f.format & {.Compression, .Encryption} != {}
-	as_stored :=
-		f.problem == .Encrypted || f.problem == .Bad_Compression || f.problem == .Too_Short || lied
+	as_stored := is_stored(f)
 	if as_stored && version == .V2_2 {
 		// ID3v2.2 has no frame flags to say how the stored bytes were made.
 		return .Not_In_Version

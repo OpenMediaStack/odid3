@@ -81,11 +81,13 @@ clone_frame :: proc(f: ^Frame, allocator: runtime.Allocator) -> (duplicate: Fram
 
 // Converts a tag to another version: renames and merges frames (TYER, TDAT and TIME into TDRC,
 // TORY into TDOR, IPLS into TIPL, and back; ID3v2.2's 3 letter IDs to 4 letters and back, PIC
-// into APIC), converts the frames inside chapters, re-encodes text
-// the target cannot hold, joins several values with "/" for ID3v2.3, and removes the frames it
-// cannot carry. It returns, in their order, the frames it removed and those whose value it could
-// only carry in part, each with the reason. From .None it only sets the version; to .None it
-// removes every frame. On an error the tag is left as it was. Free the result with destroy.
+// into APIC), converts the frames inside chapters, re-encodes text the target cannot hold, joins
+// several values with "/" before ID3v2.4, and removes the frames it cannot carry; ID3v2.2 frames
+// have no flags, so they lose theirs. It returns, in their order, the frames it removed and those
+// whose value it could only carry in part, each with the reason. From .None it only sets the
+// version; to .None it removes every frame. Tags whose frames were not all read (a compressed
+// ID3v2.2 tag, pictures skipped when they need a new layout) give .Incomplete_Tag. On an error
+// the tag is left as it was. Free the result with destroy.
 convert :: proc(
 	tag: ^Tag,
 	to: V2_Version,
@@ -102,6 +104,9 @@ convert :: proc(
 	case from == .None:
 		tag.version = to
 		return nil, nil
+	case .Compression in tag.flags && to != .None:
+		// A compressed ID3v2.2 tag: no scheme was ever defined, so its frames could not be read.
+		return nil, .Incomplete_Tag
 	}
 	work := clone_tag(tag, tag.allocator) or_return
 	list := make(Dropped_Frames, allocator)
@@ -129,8 +134,10 @@ convert_versions :: proc(
 	if tag.version == .V2_2 {
 		convert_from_v22(tag, dropped, allocator) or_return
 	}
+	// Going to ID3v2.2, an ID3v2.3 tag needs the same care as one from ID3v2.4: dates, people and
+	// text in ID3v2.3's form first.
 	middle := V2_Version.V2_3 if to == .V2_2 else to
-	if tag.version != middle {
+	if tag.version != middle || to == .V2_2 {
 		convert_frames(tag, middle, dropped, allocator) or_return
 	}
 	if to == .V2_2 {
@@ -499,11 +506,11 @@ convert_to_v22 :: proc(
 ) -> Error {
 	for i := 0; i < len(tag.frames); {
 		f := &tag.frames[i]
-		as_stored :=
-			f.problem == .Encrypted || f.problem == .Bad_Compression || f.problem == .Too_Short
 		id := v23_to_v22(f.id)
 		switch {
-		case as_stored || .Encryption in f.format:
+		case f.problem == .Too_Short:
+			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
+		case is_stored(f) || .Encryption in f.format:
 			drop(tag, i, .Encrypted, dropped, allocator) or_return
 		case id == "":
 			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
@@ -512,6 +519,9 @@ convert_to_v22 :: proc(
 		case f.id == "APIC":
 			i += 1
 		case:
+			if f.id == "RVAD" && (stereo_volume_only(f) or_return) {
+				note(dropped, "RVAD", .Partly_Converted, allocator) or_return
+			}
 			rename_frame(f, id) or_return
 			// ID3v2.2 frames have no flags.
 			f.status, f.format = {}, {}
@@ -520,6 +530,21 @@ convert_to_v22 :: proc(
 	}
 	tag.version = .V2_2
 	return nil
+}
+
+// ID3v2.2's RVA holds the volume of the right and left channels; ID3v2.3's RVAD can add the back,
+// centre and bass channels after them, which are cut. cut is true when there were some.
+@(private)
+stereo_volume_only :: proc(f: ^Frame) -> (cut: bool, err: Error) {
+	if len(f.data) < 2 || f.problem != .None {
+		return false, nil
+	}
+	stereo := 2 + 4 * ((int(f.data[1]) + 7) / 8)
+	if len(f.data) <= stereo {
+		return false, nil
+	}
+	f.data = shrink(f.data, stereo, f.allocator) or_return
+	return true, nil
 }
 
 @(private)
@@ -542,6 +567,9 @@ change_picture_layout :: proc(
 	err: Error,
 ) {
 	f := &tag.frames[index]
+	if f.problem == .Skipped_Picture {
+		return false, .Incomplete_Tag
+	}
 	content, decode_err := decode_frame(f, from, tag.allocator)
 	defer destroy_content(&content, tag.allocator)
 	if alloc, is_alloc := decode_err.(runtime.Allocator_Error); is_alloc {
@@ -554,12 +582,19 @@ change_picture_layout :: proc(
 	if !encoding_holds(picture.encoding, to) {
 		picture.encoding = .Latin1 if fits_all_latin1(picture.description) else .UTF16
 	}
-	replacement := encode_frame(
+	replacement, encode_err := encode_frame(
 		picture,
 		"PIC" if to == .V2_2 else "APIC",
 		to,
 		tag.allocator,
-	) or_return
+	)
+	if encode_err == Error(Format_Error.Not_In_Version) {
+		// A MIME type ID3v2.2 has no 3 letter name for.
+		return false, nil
+	}
+	if encode_err != nil {
+		return false, encode_err
+	}
 	if to != .V2_2 {
 		replacement.status = f.status
 	}
@@ -579,9 +614,12 @@ V22_IDS := [?][2]string {
 	{"EQU", "EQUA"},
 	{"ETC", "ETCO"},
 	{"GEO", "GEOB"},
+	{"GP1", "GRP1"},
 	{"IPL", "IPLS"},
 	{"MCI", "MCDI"},
 	{"MLL", "MLLT"},
+	{"MVI", "MVIN"},
+	{"MVN", "MVNM"},
 	{"PIC", "APIC"},
 	{"POP", "POPM"},
 	{"REV", "RVRB"},
@@ -803,7 +841,7 @@ conversion_drop :: proc(f: ^Frame, from, to: V2_Version) -> (reason: Drop_Reason
 	}
 	// Before ID3v2.4, a compressed frame states its decompressed size, which an encrypted or
 	// badly compressed frame from ID3v2.4 may not have given.
-	as_stored := f.problem == .Encrypted || f.problem == .Bad_Compression
+	as_stored := is_stored(f) && f.problem != .Too_Short
 	if as_stored && .Compression in f.format && f.data_length < 0 {
 		return .Encrypted, true
 	}
@@ -1001,9 +1039,7 @@ date_to_v23 :: proc(
 @(private)
 convert_text :: proc(tag: ^Tag, index: int) -> (ok: bool, err: Error) {
 	f := &tag.frames[index]
-	as_stored :=
-		f.problem == .Encrypted || f.problem == .Bad_Compression || f.problem == .Too_Short
-	if as_stored || !has_encoding_byte(f.id) || len(f.data) == 0 {
+	if is_stored(f) || !has_encoding_byte(f.id) || len(f.data) == 0 {
 		return true, nil
 	}
 	encoding, known := encoding_of(f.data[0])
