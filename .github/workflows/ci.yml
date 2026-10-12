@@ -53,6 +53,26 @@ jobs:
       - name: Documentation
         run: odin doc .
 
+  interop:
+    name: Interoperability
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: laytan/setup-odin@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release: ${{ env.ODIN_RELEASE }}
+      - name: Install ffmpeg and mutagen
+        run: |
+          sudo apt-get update --quiet
+          sudo apt-get install --yes --quiet ffmpeg
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet mutagen==1.48.1
+      - name: Files written by odid3, read by ffprobe and mutagen
+        run: >-
+          odin test tests -vet -strict-style -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
+          -define:ODID3_INTEROP=true -define:ODID3_PYTHON="$RUNNER_TEMP/venv/bin/python"
+
   format:
     name: Format
     runs-on: ubuntu-latest

@@ -449,18 +449,22 @@ ffprobe_tags :: proc(t: ^testing.T, name: string) -> (tags: map[string]string, o
 	if err != nil {
 		return nil, false
 	}
-	tags = make(map[string]string, context.temp_allocator)
-	text := string(data)
+	return ffprobe_flat(string(data), "format.tags."), true
+}
+
+// The values in ffprobe's flat output whose key starts with prefix, by the rest of the key.
+ffprobe_flat :: proc(output: string, prefix := "") -> (values: map[string]string) {
+	values = make(map[string]string, context.temp_allocator)
+	text := output
 	for line in strings.split_lines_iterator(&text) {
-		prefix :: "format.tags."
-		if !strings.has_prefix(line, prefix) {
+		equal := strings.index_byte(line, '=')
+		if equal < 0 || !strings.has_prefix(line[:equal], prefix) {
 			continue
 		}
-		equal := strings.index_byte(line, '=')
 		value := strings.trim_prefix(strings.trim_suffix(line[equal + 1:], "\""), "\"")
-		tags[line[len(prefix):equal]] = value
+		values[line[len(prefix):equal]] = value
 	}
-	return tags, true
+	return
 }
 
 @(test)
