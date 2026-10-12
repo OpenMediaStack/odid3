@@ -259,7 +259,13 @@ write_file_allocation_failures_leave_nothing_behind :: proc(t: ^testing.T) {
 		failing := Failing{context.allocator, budget}
 		err := odid3.write_file(path, &tags, {}, failing_allocator(&failing))
 		entries, _ := os.read_all_directory_by_path(dir, context.temp_allocator)
-		testing.expectf(t, len(entries) == 1, "budget %d: %d files", budget, len(entries))
+		if len(entries) != 1 {
+			names := make([dynamic]string, context.temp_allocator)
+			for e in entries {
+				append(&names, e.name)
+			}
+			testing.expectf(t, false, "budget %d, %v: %v left", budget, err, names)
+		}
 		if err == nil {
 			succeeded = true
 			break

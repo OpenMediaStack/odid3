@@ -1,6 +1,7 @@
 package odid3
 
 import "base:runtime"
+import "core:math/rand"
 import "core:os"
 import "core:strings"
 import "core:unicode/utf8"
@@ -97,15 +98,7 @@ write_file :: proc(
 
 	dir, name := os.split_path(target)
 	dir = dir if dir != "" else "."
-	pattern := temp_pattern(name, allocator) or_return
-	defer delete(pattern, allocator)
-	temp := os.create_temp_file(dir, pattern) or_return
-	temp_path, clone_err := strings.clone(os.name(temp), allocator)
-	if clone_err != nil {
-		os.remove(os.name(temp))
-		os.close(temp)
-		return clone_err
-	}
+	temp, temp_path := create_temp(dir, name, allocator) or_return
 	defer delete(temp_path, allocator)
 	temp_open := true
 	done := false
@@ -184,15 +177,18 @@ resolve_links :: proc(
 	return resolved, os.Error(os.General_Error.Invalid_File)
 }
 
-// ".name.*.odid3", the name cut to its first 32 bytes so that the temporary name stays within
-// the length a file system allows.
+// A new file next to the original, ".name.random.odid3" with the name cut to its first 32 bytes
+// so that it stays within what a file system allows, created exclusively so that no other file is
+// ever overwritten. Its path is allocated before the file exists, so that removing it after an
+// error never needs memory.
 @(private)
-temp_pattern :: proc(
-	name: string,
+create_temp :: proc(
+	dir, name: string,
 	allocator: runtime.Allocator,
 ) -> (
-	string,
-	runtime.Allocator_Error,
+	f: ^os.File,
+	path: string,
+	err: Error,
 ) {
 	short := name
 	if len(short) > 32 {
@@ -202,7 +198,27 @@ temp_pattern :: proc(
 		}
 		short = short[:cut]
 	}
-	return strings.concatenate({".", short, ".*.odid3"}, allocator)
+	letters := "abcdefghijklmnopqrstuvwxyz0123456789"
+	for _ in 0 ..< 100 {
+		random: [12]u8
+		for &c in random {
+			c = letters[rand.int_max(len(letters))]
+		}
+		path = strings.concatenate(
+			{dir, os.Path_Separator_String, ".", short, ".", string(random[:]), ".odid3"},
+			allocator,
+		) or_return
+		open_err: os.Error
+		f, open_err = os.open(path, {.Read, .Write, .Create, .Excl}, {.Read_User, .Write_User})
+		if open_err == nil {
+			return f, path, nil
+		}
+		delete(path, allocator)
+		if general, ok := open_err.(os.General_Error); !ok || general != .Exist {
+			return nil, "", open_err
+		}
+	}
+	return nil, "", os.Error(os.General_Error.Exist)
 }
 
 // The original must be the file it was when write_file opened it: still at its path, with the
