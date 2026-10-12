@@ -1,5 +1,7 @@
 # odid3
 
+[![CI](https://github.com/OpenMediaStack/odid3/actions/workflows/ci.yml/badge.svg)](https://github.com/OpenMediaStack/odid3/actions/workflows/ci.yml)
+
 An ID3 library for [Odin](https://odin-lang.org), part of Open Media Stack. It reads and writes the tags of MP3 files, every version of them: ID3v1, ID3v1.1 and the Enhanced TAG, ID3v2.2, ID3v2.3 and ID3v2.4.
 
 > **Status: in development, not usable yet.** The plan is in [AGENTS.md](AGENTS.md#roadmap) and the planned API in [docs/api.md](docs/api.md).
@@ -24,7 +26,10 @@ Needs Odin `dev-2026-10`. The checks the CI runs:
 ```bash
 odin check . -no-entry-point -vet -strict-style
 odin test tests -vet -strict-style -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
+odinfmt -path:. -w
 ```
+
+`odinfmt` comes with [OLS](https://github.com/DanielGavin/ols); the CI builds it from the commit pinned in `.github/workflows/ci.yml`.
 
 How the project is run, its conventions and its roadmap are in [AGENTS.md](AGENTS.md).
 

@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Only a pull request supersedes itself; a push to main is left to finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  ODIN_RELEASE: dev-2026-10
+  # odinfmt is built from this OLS commit, checked to build with ODIN_RELEASE.
+  OLS_COMMIT: a2cb00fadb49b0d79ca5089c8f700ab94cfb08ba
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    name: Check and test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: laytan/setup-odin@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release: ${{ env.ODIN_RELEASE }}
+      - name: Check
+        run: odin check . -no-entry-point -vet -strict-style
+      - name: Test
+        run: odin test tests -vet -strict-style -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
+      - name: Documentation
+        run: odin doc .
+
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: laytan/setup-odin@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release: ${{ env.ODIN_RELEASE }}
+      - name: Build odinfmt
+        run: |
+          git clone --quiet --filter=blob:none https://github.com/DanielGavin/ols.git "$RUNNER_TEMP/ols"
+          git -C "$RUNNER_TEMP/ols" checkout --quiet "$OLS_COMMIT"
+          cd "$RUNNER_TEMP/ols"
+          odin build tools/odinfmt/main.odin -file -collection:src=src -out:"$RUNNER_TEMP/odinfmt"
+      - name: Check formatting
+        run: |
+          "$RUNNER_TEMP/odinfmt" -path:. -w
+          if ! git diff --exit-code; then
+            echo "::error::odinfmt changes the files above: run odinfmt -path:. -w"
+            exit 1
+          fi
+
+  yamllint:
+    name: YAML Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ibiqlik/action-yamllint@v3
+
+  dashes:
+    name: No em or en dashes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Look for em and en dashes
+        run: |
+          em=$(printf '\342\200\224')
+          en=$(printf '\342\200\223')
+          if git grep -nI -F -e "$em" -e "$en"; then
+            echo "::error::Use a comma, a colon, parentheses or a new sentence instead of an em or en dash."
+            exit 1
+          fi
