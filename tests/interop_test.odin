@@ -62,6 +62,7 @@ INTEROP_CASES := []Interop_Case {
 	{"v24_v1_1", .V2_4, {}, nil, .V1_1, true},
 	{"v1_0", .None, {}, nil, .V1_0, true},
 	{"v1_1", .None, {}, nil, .V1_1, true},
+	{"v1_1_utf8", .None, {v1_encoding = .UTF8}, nil, .V1_1, true},
 }
 
 INTEROP_ARTIST :: "Marlowe Kite"
@@ -70,10 +71,24 @@ INTEROP_DATE :: "2019-05-04T12:30"
 INTEROP_COMMENT :: "Recorded in one take."
 INTEROP_CHAPTER :: "Chapter one"
 
-// A title Latin-1 can hold where the case needs one (ID3v1 holds only Latin-1), else one it
-// cannot.
+// A title Latin-1 can hold where the case needs one, else one it cannot.
 interop_title :: proc(c: Interop_Case) -> string {
-	return "Café Noir" if c.encoding == .Latin1 || c.v1 != .None else "Café 坂本"
+	latin1 := c.encoding == .Latin1 || c.v1 != .None && !interop_v1_utf8(c)
+	return "Café Noir" if latin1 else "Café 坂本"
+}
+
+interop_v1_utf8 :: proc(c: Interop_Case) -> bool {
+	encoding, asked := c.options.v1_encoding.?
+	return asked && encoding == .UTF8
+}
+
+// UTF-8 read as Latin-1, as mutagen reads ID3v1.
+as_latin1 :: proc(s: string) -> string {
+	b := strings.builder_make(context.temp_allocator)
+	for c in transmute([]u8)s {
+		strings.write_rune(&b, rune(c))
+	}
+	return strings.to_string(b)
 }
 
 // A picture whose bytes hold false MPEG syncs and a 0xFF 0x00 pair, which unsynchronisation must
@@ -171,7 +186,7 @@ write_interop_file :: proc(t: ^testing.T, path: string, c: Interop_Case) -> bool
 	if c.v1 != .None {
 		// ID3v1 holds the year of the date, and ID3v1.0 no track.
 		cut := odid3.Fields{.Date} if c.v1 == .V1_1 else {.Date, .Track}
-		overflow, err := odid3.sync_v1(&tags, .Always, c.v1)
+		overflow, err := odid3.sync_v1(&tags, .Always, c.v1, nil, c.options.v1_encoding)
 		testing.expectf(
 			t,
 			overflow == cut && err == nil,
@@ -263,6 +278,7 @@ check_with_odid3 :: proc(t: ^testing.T, path: string, c: Interop_Case) {
 			v1,
 		)
 		testing.expect_value(t, v1.track, u8(3) if c.v1 == .V1_1 else 0)
+		testing.expect_value(t, v1.encoding, c.options.v1_encoding.? or_else .Latin1)
 	}
 	if c.version != .None {
 		check_v2_with_odid3(t, &tags.v2, c)
@@ -353,7 +369,7 @@ check_with_ffprobe :: proc(t: ^testing.T, path: string, c: Interop_Case) {
 	probed := ffprobe_flat(out)
 	for w in want {
 		// ffmpeg takes ID3v1 text for UTF-8, so a Latin-1 title does not come out as written.
-		if c.version == .None && w[0] == "format.tags.title" {
+		if c.version == .None && w[0] == "format.tags.title" && !interop_v1_utf8(c) {
 			continue
 		}
 		got := probed[w[0]] or_else ""
@@ -394,7 +410,7 @@ mutagen_frames :: proc(c: Interop_Case) -> (want: map[string][2]string) {
 		want["version"] = {"-", "1.1"}
 		want["unsynchronisation"] = {"-", "False"}
 		texts := [?][2]string {
-			{"TIT2", title},
+			{"TIT2", as_latin1(title) if interop_v1_utf8(c) else title},
 			{"TPE1", INTEROP_ARTIST},
 			{"TALB", INTEROP_ALBUM},
 			{"TDRC", "2019"},

@@ -22,8 +22,9 @@ DAMAGE_WARNINGS :: Warnings {
 // caller, who frees them with delete: the ID3v2 tag first (none when its version is .None), then
 // everything that lies between the tags of the file (the audio, APE and Lyrics3 tags, unknown
 // bytes) byte for byte, then ID3v1 (none when its version is .None): the file's own ID3v1 bytes,
-// with its Enhanced TAG, when they hold the same values, else tags.v1 in Latin-1. A second ID3v2
-// tag, stacked or appended, is dropped. The tags are located in file again, so tags may come from
+// with its Enhanced TAG, when they hold the same values in the same encoding, else tags.v1
+// rendered in the encoding Write_Options.v1_encoding asks for, or its own. A second ID3v2 tag,
+// stacked or appended, is dropped. The tags are located in file again, so tags may come from
 // another read of it; damage found in file as it is now also needs replace_damaged.
 write_bytes :: proc(
 	file: []u8,
@@ -260,7 +261,9 @@ render_tags :: proc(
 		head = render(&tags.v2, options, allocator) or_return
 	}
 	if tags.v1.version != .None {
-		tail, err = v1_bytes(&tags.v1, src, layout, allocator)
+		v1 := tags.v1
+		v1.encoding = options.v1_encoding.? or_else v1.encoding
+		tail, err = v1_bytes(&v1, src, layout, allocator)
 		if err != nil {
 			delete(head, allocator)
 			return nil, nil, err
