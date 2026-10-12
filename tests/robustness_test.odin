@@ -1,6 +1,7 @@
 package odid3_tests
 
 import "core:math/rand"
+import "core:slice"
 import "core:testing"
 
 import odid3 "../"
@@ -10,11 +11,15 @@ expect_layout_inside :: proc(t: ^testing.T, name: string, data: []u8, layout: od
 		layout.v2,
 		layout.v2_stacked,
 		layout.audio,
+		layout.v2_appended,
 		layout.ape,
 		layout.lyrics3,
 		layout.v1_enhanced,
 		layout.v1,
 	}
+	slice.sort_by(ranges[:], proc(a, b: odid3.Range) -> bool {
+		return a.offset < b.offset
+	})
 	end: i64 = 0
 	for r in ranges {
 		if r.size == 0 {

@@ -13,6 +13,7 @@ Layout :: struct {
 	file_size:   i64,
 	v2:          Range, // the leading ID3v2 tag: header, frames, padding and footer
 	v2_stacked:  Range, // ID3v2 tags right after the first one, replaced by it on write
+	v2_appended: Range, // an ID3v2.4 tag at the end, found through its footer
 	audio:       Range, // what lies between the tags, kept byte for byte on write
 	ape:         Range, // found, never read
 	lyrics3:     Range, // found, never read
@@ -119,7 +120,8 @@ skip_stacked_tags :: proc(
 	return
 }
 
-// ID3v1 is always last. APE and Lyrics3 tags come before it, in either order.
+// ID3v1 is always last. APE and Lyrics3 tags and an appended ID3v2.4 tag come before it, in any
+// order.
 @(private)
 locate_trailing :: proc(src: ^Source, start: i64, layout: ^Layout) -> (end: i64, err: Error) {
 	end = src.size
@@ -135,7 +137,14 @@ locate_trailing :: proc(src: ^Source, start: i64, layout: ^Layout) -> (end: i64,
 			end -= V1_ENHANCED_SIZE
 		}
 	}
-	for _ in 0 ..< 2 {
+	for _ in 0 ..< 3 {
+		if layout.v2_appended.size == 0 {
+			layout.v2_appended = find_appended_v2(src, start, end) or_return
+			if layout.v2_appended.size > 0 {
+				end = layout.v2_appended.offset
+				continue
+			}
+		}
 		if layout.ape.size == 0 {
 			layout.ape = find_ape(src, start, end) or_return
 			if layout.ape.size > 0 {
@@ -153,6 +162,29 @@ locate_trailing :: proc(src: ^Source, start: i64, layout: ^Layout) -> (end: i64,
 		break
 	}
 	return
+}
+
+// An ID3v2.4 tag can be appended at the end of a file, with a footer that repeats its header with
+// "3DI" in place of "ID3", so that it can be found from the end. The header must agree.
+@(private)
+find_appended_v2 :: proc(src: ^Source, start, end: i64) -> (r: Range, err: Error) {
+	if end - V2_HEADER_SIZE - V2_FOOTER_SIZE < start {
+		return
+	}
+	buf: [V2_FOOTER_SIZE]u8
+	footer := source_bytes(src, end - V2_FOOTER_SIZE, buf[:]) or_return
+	footer_header, status := parse_v2_footer(footer)
+	offset := end - v2_total_size(footer_header)
+	if status != .Valid || footer_header.major != 4 || offset < start {
+		return
+	}
+	head_buf: [V2_HEADER_SIZE]u8
+	head := source_bytes(src, offset, head_buf[:]) or_return
+	header, head_status := parse_v2_header(head)
+	if head_status != .Valid || header != footer_header {
+		return
+	}
+	return {offset, end - offset}, nil
 }
 
 // An APE tag ends with a 32 byte footer: "APETAGEX", a version, the size of the items and the
