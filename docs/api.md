@@ -114,6 +114,7 @@ Layout :: struct {
 }
 
 Warning :: enum u8 {
+	Bad_Header, // "ID3" followed by bytes that cannot be an ID3v2 header: kept as unknown bytes
 	Truncated_Tag, // the ID3v2 tag claims more bytes than the file holds
 	Damaged_Frames, // a frame header cannot be right: the frames after it are lost
 	Bad_Extended_Header,
