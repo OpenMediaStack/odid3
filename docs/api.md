@@ -122,6 +122,7 @@ Warning :: enum u8 {
 	Data_In_Padding, // non-zero bytes after the frames
 	Plain_Frame_Sizes, // ID3v2.4 frame sizes written as plain integers, as old iTunes did
 	Bad_Frame_Ids, // frame IDs with characters other than A to Z and 0 to 9: the frames are kept
+	Bad_Unsynchronisation, // the tag says it is unsynchronised but cannot be: read as stored
 	Compressed_V22_Tag, // no scheme was ever defined: the frames cannot be read
 	Unsupported_Version, // ID3v2.5 or later: kept as unknown bytes
 	Second_V2_Tag, // a second ID3v2 tag, appended or right after the first
@@ -204,6 +205,7 @@ Frame_Problem :: enum u8 {
 	Bad_Compression, // data holds the bytes as stored
 	Bad_Data_Length,
 	Skipped_Picture, // read with skip_picture_data: data is nil
+	Bad_Unsynchronisation, // said to be unsynchronised but cannot be: data holds the bytes as stored
 }
 
 // Copies id and data.

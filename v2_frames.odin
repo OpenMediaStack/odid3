@@ -1,6 +1,7 @@
 package odid3
 
 import "base:runtime"
+import "core:mem"
 import "core:strings"
 
 // A frame of an ID3v2 tag. Free it with destroy.
@@ -10,7 +11,7 @@ Frame :: struct {
 	format:       Frame_Format,
 	group:        u8, // when format has .Grouping
 	method:       u8, // the encryption method, when format has .Encryption
-	data:         []u8, // as stored, without the bytes the format flags add
+	data:         []u8, // unsynchronisation undone, without the bytes the format flags add
 	problem:      Frame_Problem,
 	offset:       i64, // of the frame header in the file; -1 for a frame not read from a file
 	size:         int, // the size field of the frame header
@@ -44,10 +45,16 @@ Frame_Format :: bit_set[Frame_Format_Flag;u8]
 // Why a frame's data is not its content.
 Frame_Problem :: enum u8 {
 	None,
-	// Shorter than the bytes its format flags add: data holds the bytes as stored.
+	// Shorter than the bytes its format flags add: data holds all the bytes after the frame header,
+	// unsynchronisation undone.
 	Too_Short,
 	// Read with skip_picture_data: data is nil.
 	Skipped_Picture,
+	// The data length indicator does not match the data: data holds what was decoded.
+	Bad_Data_Length,
+	// Said to be unsynchronised, but its bytes cannot be (a 0xFF followed by 0xE0 or more, or last):
+	// the flag lied, and data holds the bytes as stored.
+	Bad_Unsynchronisation,
 }
 
 // The first frame with this ID at or after start.
@@ -70,14 +77,81 @@ destroy_frame :: proc(frame: ^Frame) {
 @(private)
 FRAME_HEADER_SIZE :: 10
 
-// The frames and padding of a tag, as positions in src.
+// The frames and padding of a tag, as positions in src. When unsynchronisation was undone for the
+// whole tag, src holds the decoded bytes: base is where they start in the file, and removed lists
+// the decoded positions where a byte was taken out, to find frames in the file again.
 @(private)
 Body :: struct {
-	src:         ^Source,
-	start:       i64,
-	end:         i64,
-	truncated:   bool,
-	plain_sizes: bool, // ID3v2.4: a frame size was a plain integer, so later ones probably are
+	src:           ^Source,
+	start:         i64,
+	end:           i64,
+	truncated:     bool,
+	plain_sizes:   bool, // ID3v2.4: a frame size was a plain integer, so later ones probably are
+	base:          i64,
+	removed:       []u32,
+	unsync_frames: bool, // ID3v2.4: the tag header says every frame is unsynchronised
+}
+
+@(private)
+file_offset :: proc(body: ^Body, pos: i64) -> i64 {
+	low, high := 0, len(body.removed)
+	for low < high {
+		mid := (low + high) / 2
+		if i64(body.removed[mid]) <= pos {
+			low = mid + 1
+		} else {
+			high = mid
+		}
+	}
+	return body.base + pos + i64(low)
+}
+
+// Unsynchronisation keeps a tag from holding a false MPEG frame sync (0xFF then a byte of 0xE0 or
+// more) that an old player could mistake for audio: writing puts a 0x00 after every 0xFF followed
+// by such a byte or by 0x00, and after a last 0xFF; reading takes out the 0x00 after every 0xFF.
+// So unsynchronised bytes never hold a 0xFF followed by 0xE0 or more, nor end with 0xFF: when they
+// do, the flag lied and valid is false (mutagen checks the same). Works in place; removed, when
+// given, gets the positions of the output where a byte was taken out.
+@(private)
+undo_unsynchronisation :: proc(
+	data: []u8,
+	removed: ^[dynamic]u32 = nil,
+) -> (
+	out: []u8,
+	valid: bool,
+	err: Error,
+) {
+	for c, i in data {
+		if c == 0xFF && (i + 1 == len(data) || data[i + 1] >= 0xE0) {
+			return data, false, nil
+		}
+	}
+	n := 0
+	for i := 0; i < len(data); i += 1 {
+		data[n] = data[i]
+		n += 1
+		if data[i] == 0xFF && i + 1 < len(data) && data[i + 1] == 0 {
+			if removed != nil {
+				append(removed, u32(n)) or_return
+			}
+			i += 1
+		}
+	}
+	return data[:n], true, nil
+}
+
+// Gives a slice shrunk in place its new size in its allocation: some allocators need the size a
+// block was allocated with when it is freed.
+@(private)
+shrink :: proc(data: []u8, n: int, allocator: runtime.Allocator) -> (out: []u8, err: Error) {
+	if n == len(data) {
+		return data, nil
+	}
+	if n == 0 {
+		delete(data, allocator)
+		return nil, nil
+	}
+	return mem.resize_bytes(data, n, allocator = allocator)
 }
 
 // What can follow a frame.
@@ -132,7 +206,8 @@ read_frames :: proc(tag: ^Tag, body: ^Body, options: Read_Options, warnings: ^Wa
 			warnings^ += {.Bad_Frame_Ids}
 		}
 		frame := read_frame(body, pos, h, tag.version, options, tag.allocator) or_return
-		if frame.problem == .Too_Short {
+		#partial switch frame.problem {
+		case .Too_Short, .Bad_Data_Length, .Bad_Unsynchronisation:
 			warnings^ += {.Frame_Problems}
 		}
 		if _, append_err := append(&tag.frames, frame); append_err != nil {
@@ -248,7 +323,7 @@ read_frame :: proc(
 	err: Error,
 ) {
 	f.allocator = allocator
-	f.offset = pos
+	f.offset = file_offset(body, pos)
 	f.size = int(h.size)
 	f.stored_flags = h.flags
 	f.status = frame_status(version, h.flags[0])
@@ -265,9 +340,22 @@ read_frame :: proc(
 	}
 	f.data = make([]u8, h.size, allocator) or_return
 	source_read(body.src, pos + FRAME_HEADER_SIZE, f.data) or_return
+	// ID3v2.4 unsynchronises everything after the frame header, the bytes the flags add included.
+	if version == .V2_4 && (.Unsynchronisation in f.format || body.unsync_frames) {
+		decoded, valid := undo_unsynchronisation(f.data) or_return
+		if valid {
+			f.data = shrink(f.data, len(decoded), allocator) or_return
+		} else {
+			f.problem = .Bad_Unsynchronisation
+		}
+	}
 	extras := split_frame_extras(&f, version)
 	copy(f.data, f.data[extras:])
-	f.data = f.data[:len(f.data) - extras]
+	f.data = shrink(f.data, len(f.data) - extras, allocator) or_return
+	known_length := .Compression not_in f.format && .Encryption not_in f.format
+	if f.problem == .None && known_length && f.data_length >= 0 && f.data_length != len(f.data) {
+		f.problem = .Bad_Data_Length
+	}
 	return
 }
 
@@ -364,7 +452,7 @@ frame_format :: proc(version: V2_Version, b: u8) -> (format: Frame_Format) {
 // loses it.
 @(private)
 read_padding :: proc(tag: ^Tag, body: ^Body, start: i64, warnings: ^Warnings) -> Error {
-	tag.padding = int(body.end - start)
+	tag.padding = int(file_offset(body, body.end) - file_offset(body, start))
 	buf: [4096]u8
 	for pos := start; pos < body.end; {
 		chunk := source_bytes(body.src, pos, buf[:min(body.end - pos, len(buf))]) or_return

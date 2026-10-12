@@ -346,6 +346,51 @@ body += b'TPE1' + len(artist).to_bytes(4, 'big') + b'\x00\x00' + artist
 write('v24_itunes.mp3', b'\x04\x00\x00', body + bytes(100))
 PY
 
+# v23_unsync.mp3: v23_unicode.mp3 with its whole tag unsynchronised, as ID3v2.3 does it: a 0x00 is
+# inserted after every 0xFF followed by 0x00 or a byte of 0xE0 or more (the UTF-16 byte order marks
+# are FF FE), and the tag header gets the unsynchronisation flag and the new size.
+# Expect: the values of v23_unicode.mp3. ffmpeg reads the frame sizes against the stored bytes rather
+#   than the decoded ones, so ffprobe only finds the title.
+python3 - v23_unicode.mp3 v23_unsync.mp3 <<'PY'
+import sys
+data = open(sys.argv[1], 'rb').read()
+size = (data[6] << 21) | (data[7] << 14) | (data[8] << 7) | data[9]
+body, audio = data[10:10 + size], data[10 + size:]
+out = bytearray()
+for i, c in enumerate(body):
+    out.append(c)
+    if c == 0xFF and (i + 1 == len(body) or body[i + 1] >= 0xE0 or body[i + 1] == 0):
+        out.append(0)
+n = len(out)
+header = b'ID3\x03\x00\x80' + bytes([(n >> 21) & 0x7F, (n >> 14) & 0x7F, (n >> 7) & 0x7F, n & 0x7F])
+open(sys.argv[2], 'wb').write(header + out + audio)
+PY
+
+# v24_unsync.mp3: an ID3v2.4 tag whose TIT2 frame, "Café" in UTF-16 (FF FE byte order mark), is
+# unsynchronised on its own: its flags say unsynchronisation (0x02) and data length indicator
+# (0x01), the indicator holds the size before unsynchronisation, the frame size the size after. A
+# TPE1 frame in UTF-8 follows, untouched.
+# Expect: title "Café", artist "Marlowe Kite".
+python3 - no_tag.mp3 v24_unsync.mp3 <<'PY'
+import sys
+def syncsafe(n):
+    return bytes([(n >> 21) & 0x7F, (n >> 14) & 0x7F, (n >> 7) & 0x7F, n & 0x7F])
+def unsync(b):
+    out = bytearray()
+    for i, c in enumerate(b):
+        out.append(c)
+        if c == 0xFF and (i + 1 == len(b) or b[i + 1] >= 0xE0 or b[i + 1] == 0):
+            out.append(0)
+    return bytes(out)
+title = b'\x01' + '\ufeffCafé'.encode('utf-16-le')
+stored = syncsafe(len(title)) + unsync(title)
+frames = b'TIT2' + syncsafe(len(stored)) + b'\x00\x03' + stored
+artist = b'\x03Marlowe Kite'
+frames += b'TPE1' + syncsafe(len(artist)) + b'\x00\x00' + artist
+tag = b'ID3\x04\x00\x00' + syncsafe(len(frames)) + frames
+open(sys.argv[2], 'wb').write(tag + open(sys.argv[1], 'rb').read())
+PY
+
 # truncated_tag.mp3: the first 150 bytes of v23_cover.mp3, cut inside the APIC frame.
 # Expect: a partial tag (title "With a cover") and a warning, no crash.
 head -c 150 v23_cover.mp3 >truncated_tag.mp3

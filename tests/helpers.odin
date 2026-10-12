@@ -165,3 +165,16 @@ letters :: proc(n: int) -> []u8 {
 	}
 	return out
 }
+
+// What a writer does to unsynchronise: a 0x00 after every 0xFF followed by 0x00 or a byte of 0xE0
+// or more, and after a last 0xFF.
+unsynchronise :: proc(data: []u8) -> []u8 {
+	out := make([dynamic]u8, context.temp_allocator)
+	for c, i in data {
+		append(&out, c)
+		if c == 0xFF && (i + 1 == len(data) || data[i + 1] >= 0xE0 || data[i + 1] == 0) {
+			append(&out, 0)
+		}
+	}
+	return out[:]
+}
