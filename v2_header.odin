@@ -165,11 +165,11 @@ read_v2_tag :: proc(
 		end       = min(end, src.size),
 		truncated = end > src.size,
 	}
-	decoded: []u8
-	removed: [dynamic]i64
+	raw: []u8
+	removed: [dynamic]u32
 	memory: Source
 	defer {
-		delete(decoded, allocator)
+		delete(raw, allocator)
 		delete(removed)
 	}
 	if .Unsynchronisation in tag.flags {
@@ -178,15 +178,19 @@ read_v2_tag :: proc(
 		} else {
 			// Before ID3v2.4, the whole tag is unsynchronised, frame headers included: the frames
 			// can only be split once it is undone.
-			removed = make([dynamic]i64, allocator)
-			decoded = make([]u8, body.end - body.start, allocator) or_return
-			source_read(src, body.start, decoded) or_return
-			decoded = undo_unsynchronisation(decoded, &removed) or_return
-			memory = memory_source(decoded)
-			body.src = &memory
-			body.base = body.start
-			body.removed = removed[:]
-			body.start, body.end = 0, i64(len(decoded))
+			removed = make([dynamic]u32, allocator)
+			raw = make([]u8, body.end - body.start, allocator) or_return
+			source_read(src, body.start, raw) or_return
+			decoded, valid := undo_unsynchronisation(raw, &removed) or_return
+			if valid {
+				memory = memory_source(decoded)
+				body.src = &memory
+				body.base = body.start
+				body.removed = removed[:]
+				body.start, body.end = 0, i64(len(decoded))
+			} else {
+				warnings^ += {.Bad_Unsynchronisation}
+			}
 		}
 	}
 	if .Extended_Header in tag.flags {

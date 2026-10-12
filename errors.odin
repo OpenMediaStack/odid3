@@ -32,6 +32,8 @@ Warning :: enum u8 {
 	Plain_Frame_Sizes,
 	// Frame IDs with characters other than A to Z and 0 to 9: the frames are kept.
 	Bad_Frame_Ids,
+	// The tag says it is unsynchronised, but its bytes cannot be: they are read as stored.
+	Bad_Unsynchronisation,
 	// At least one frame has a problem that is not of its own choosing: see Frame.problem.
 	Frame_Problems,
 }

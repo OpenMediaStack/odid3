@@ -349,7 +349,8 @@ PY
 # v23_unsync.mp3: v23_unicode.mp3 with its whole tag unsynchronised, as ID3v2.3 does it: a 0x00 is
 # inserted after every 0xFF followed by 0x00 or a byte of 0xE0 or more (the UTF-16 byte order marks
 # are FF FE), and the tag header gets the unsynchronisation flag and the new size.
-# Expect: the values of v23_unicode.mp3.
+# Expect: the values of v23_unicode.mp3. ffmpeg reads the frame sizes against the stored bytes rather
+#   than the decoded ones, so ffprobe only finds the title.
 python3 - v23_unicode.mp3 v23_unsync.mp3 <<'PY'
 import sys
 data = open(sys.argv[1], 'rb').read()
