@@ -172,3 +172,102 @@ split_terminated :: proc(encoding: Encoding, data: []u8) -> (text, rest: []u8, t
 	}
 	return data, nil, false
 }
+
+// Appends s in an encoding: Latin-1 (false when s holds a character outside it), UTF-16 little
+// endian after its byte order mark, UTF-16 big endian, or UTF-8.
+@(private)
+append_encoded :: proc(
+	out: ^[dynamic]u8,
+	encoding: Encoding,
+	s: string,
+) -> (
+	ok: bool,
+	err: runtime.Allocator_Error,
+) {
+	switch encoding {
+	case .Latin1:
+		for r in s {
+			if r > 0xFF || r == utf8.RUNE_ERROR {
+				return false, nil
+			}
+			append(out, u8(r)) or_return
+		}
+	case .UTF16, .UTF16BE:
+		big_endian := encoding == .UTF16BE
+		if !big_endian {
+			append(out, 0xFF, 0xFE) or_return
+		}
+		for r in s {
+			c := r if r != utf8.RUNE_ERROR && r <= 0x10FFFF else 0xFFFD
+			if c >= 0x10000 {
+				high, low := utf16.encode_surrogate_pair(c)
+				append_utf16_unit(out, high, big_endian) or_return
+				append_utf16_unit(out, low, big_endian) or_return
+			} else {
+				append_utf16_unit(out, c, big_endian) or_return
+			}
+		}
+	case .UTF8:
+		append(out, s) or_return
+	}
+	return true, nil
+}
+
+@(private)
+append_utf16_unit :: proc(
+	out: ^[dynamic]u8,
+	unit: rune,
+	big_endian: bool,
+) -> runtime.Allocator_Error {
+	if big_endian {
+		_, err := append(out, u8(unit >> 8), u8(unit))
+		return err
+	}
+	_, err := append(out, u8(unit), u8(unit >> 8))
+	return err
+}
+
+// Appends the terminator of a string in an encoding: one NUL, two in UTF-16.
+@(private)
+append_terminator :: proc(out: ^[dynamic]u8, encoding: Encoding) -> runtime.Allocator_Error {
+	if encoding == .UTF16 || encoding == .UTF16BE {
+		_, err := append(out, 0, 0)
+		return err
+	}
+	_, err := append(out, 0)
+	return err
+}
+
+// The encoding new text takes: UTF-8 in ID3v2.4; before it, Latin-1 when every string fits, else
+// UTF-16.
+@(private)
+default_encoding :: proc(version: V2_Version, values: ..string) -> Encoding {
+	if version == .V2_4 {
+		return .UTF8
+	}
+	for value in values {
+		if !fits_latin1(value, max(int)) {
+			return .UTF16
+		}
+	}
+	return .Latin1
+}
+
+// Whether a version has an encoding and it can hold every string.
+@(private)
+encoding_holds :: proc(encoding: Encoding, version: V2_Version, values: ..string) -> bool {
+	switch encoding {
+	case .Latin1:
+		for value in values {
+			if !fits_latin1(value, max(int)) {
+				return false
+			}
+		}
+		return true
+	case .UTF16:
+		return true
+	case .UTF16BE, .UTF8:
+		return version == .V2_4
+	}
+	return false
+}

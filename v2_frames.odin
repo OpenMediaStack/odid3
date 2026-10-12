@@ -77,6 +77,48 @@ find_frame :: proc(tag: ^Tag, id: string, start := 0) -> (index: int, ok: bool) 
 	return -1, false
 }
 
+// A new frame with copies of id and data, owned by allocator; its offset is -1.
+make_frame :: proc(
+	id: string,
+	data: []u8,
+	allocator := context.allocator,
+) -> (
+	frame: Frame,
+	err: runtime.Allocator_Error,
+) #optional_allocator_error {
+	frame = {
+		offset      = -1,
+		data_length = -1,
+		allocator   = allocator,
+	}
+	frame.id = strings.clone(id, allocator) or_return
+	if len(data) > 0 {
+		frame.data, err = make([]u8, len(data), allocator)
+		if err != nil {
+			delete(frame.id, allocator)
+			return {}, err
+		}
+		copy(frame.data, data)
+	}
+	return
+}
+
+// Adds a frame at the end of a tag, which takes ownership of it.
+add_frame :: proc(tag: ^Tag, frame: Frame) -> runtime.Allocator_Error {
+	adopt_context_allocator(tag)
+	_, err := append(&tag.frames, frame)
+	return err
+}
+
+// Removes the frame at index from a tag and frees it.
+remove_frame :: proc(tag: ^Tag, index: int) {
+	if index < 0 || index >= len(tag.frames) {
+		return
+	}
+	destroy_frame(&tag.frames[index])
+	ordered_remove(&tag.frames, index)
+}
+
 // Frees what a frame holds and resets it.
 destroy_frame :: proc(frame: ^Frame) {
 	delete(frame.id, frame.allocator)

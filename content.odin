@@ -630,3 +630,197 @@ big_endian_counter :: proc(b: []u8) -> (n: u64) {
 	}
 	return
 }
+
+// A new frame holding content in the layout of a tag of the given version, owned by allocator. Text
+// that its encoding cannot hold gives .Not_Encodable, an encoding the version does not have
+// .Encoding_Not_In_Version, an ID of the wrong length .Bad_Frame_Id. Before ID3v2.4, several values
+// are joined with "/", as mutagen does.
+encode_frame :: proc(
+	content: Frame_Content,
+	id: string,
+	version: V2_Version,
+	allocator := context.allocator,
+) -> (
+	frame: Frame,
+	err: Error,
+) {
+	if version == .None {
+		return {}, .No_Version
+	}
+	if len(id) != (3 if version == .V2_2 else 4) {
+		return {}, .Bad_Frame_Id
+	}
+	data := make([dynamic]u8, allocator)
+	defer if err != nil {
+		delete(data)
+	}
+	switch c in content {
+	case Text:
+		start_text(&data, c.encoding, version) or_return
+		encode_values(&data, c.encoding, c.values, version) or_return
+	case User_Text:
+		start_text(&data, c.encoding, version) or_return
+		encode_string(&data, c.encoding, c.description, true) or_return
+		encode_values(&data, c.encoding, c.values, version) or_return
+	case Url:
+		encode_string(&data, .Latin1, c.url, false) or_return
+	case User_Url:
+		start_text(&data, c.encoding, version) or_return
+		encode_string(&data, c.encoding, c.description, true) or_return
+		encode_string(&data, .Latin1, c.url, false) or_return
+	case Comment:
+		start_text(&data, c.encoding, version) or_return
+		language := c.language
+		append(&data, ..language[:]) or_return
+		encode_string(&data, c.encoding, c.description, true) or_return
+		encode_string(&data, c.encoding, c.text, false) or_return
+	case Picture:
+		start_text(&data, c.encoding, version) or_return
+		if version == .V2_2 {
+			format := v22_image_format(c.mime)
+			if format == "" {
+				return {}, .Not_In_Version
+			}
+			append(&data, format) or_return
+		} else {
+			encode_string(&data, .Latin1, c.mime, true) or_return
+		}
+		append(&data, u8(c.type)) or_return
+		encode_string(&data, c.encoding, c.description, true) or_return
+		append(&data, ..c.data) or_return
+	case Unique_File_Id:
+		encode_string(&data, .Latin1, c.owner, true) or_return
+		append(&data, ..c.identifier) or_return
+	case Popularimeter:
+		encode_string(&data, .Latin1, c.email, true) or_return
+		append(&data, c.rating) or_return
+		if c.counter > 0 {
+			append_counter(&data, c.counter) or_return
+		}
+	case Play_Counter:
+		append_counter(&data, c.counter) or_return
+	case Private:
+		encode_string(&data, .Latin1, c.owner, true) or_return
+		append(&data, ..c.data) or_return
+	case Chapter:
+		encode_string(&data, .Latin1, c.element_id, true) or_return
+		times: [16]u8
+		put_be32(times[0:4], c.start_ms)
+		put_be32(times[4:8], c.end_ms)
+		put_be32(times[8:12], c.start_offset)
+		put_be32(times[12:16], c.end_offset)
+		append(&data, ..times[:]) or_return
+		for &f in c.frames {
+			render_frame(&data, &f, version) or_return
+		}
+	case Table_Of_Contents:
+		encode_string(&data, .Latin1, c.element_id, true) or_return
+		flags: u8 = (0x02 if c.top_level else 0) | (0x01 if c.ordered else 0)
+		if len(c.children) > 255 {
+			return {}, .Bad_Content
+		}
+		append(&data, flags, u8(len(c.children))) or_return
+		for child in c.children {
+			encode_string(&data, .Latin1, child, true) or_return
+		}
+		for &f in c.frames {
+			render_frame(&data, &f, version) or_return
+		}
+	case Binary:
+		append(&data, ..c.data) or_return
+	case:
+		return {}, .Bad_Content
+	}
+	// The ID first: once the data shrinks into a new block, nothing else may fail.
+	frame.id = strings.clone(id, allocator) or_return
+	allocated := ([^]u8)(raw_data(data))[:cap(data)]
+	frame.data, err = shrink(allocated, len(data), allocator)
+	if err != nil {
+		delete(frame.id, allocator)
+		return {}, err
+	}
+	frame.allocator = allocator
+	frame.offset = -1
+	frame.data_length = -1
+	return frame, nil
+}
+
+@(private)
+start_text :: proc(data: ^[dynamic]u8, encoding: Encoding, version: V2_Version) -> Error {
+	if !encoding_holds(encoding, version) {
+		return .Encoding_Not_In_Version
+	}
+	append(data, u8(encoding)) or_return
+	return nil
+}
+
+@(private)
+encode_string :: proc(
+	data: ^[dynamic]u8,
+	encoding: Encoding,
+	s: string,
+	terminated: bool,
+) -> Error {
+	ok := append_encoded(data, encoding, s) or_return
+	if !ok {
+		return .Not_Encodable
+	}
+	if terminated {
+		append_terminator(data, encoding) or_return
+	}
+	return nil
+}
+
+@(private)
+encode_values :: proc(
+	data: ^[dynamic]u8,
+	encoding: Encoding,
+	values: []string,
+	version: V2_Version,
+) -> Error {
+	if version != .V2_4 && len(values) > 1 {
+		joined := strings.join(values, "/", data.allocator) or_return
+		defer delete(joined, data.allocator)
+		return encode_string(data, encoding, joined, false)
+	}
+	for value, i in values {
+		if i > 0 {
+			append_terminator(data, encoding) or_return
+		}
+		encode_string(data, encoding, value, false) or_return
+	}
+	return nil
+}
+
+@(private)
+append_counter :: proc(data: ^[dynamic]u8, counter: u64) -> runtime.Allocator_Error {
+	b: [8]u8
+	n := counter
+	for i := 7; i >= 0; i -= 1 {
+		b[i] = u8(n)
+		n >>= 8
+	}
+	start := 0
+	for start < 4 && b[start] == 0 {
+		start += 1
+	}
+	_, err := append(data, ..b[start:])
+	return err
+}
+
+@(private)
+v22_image_format :: proc(mime: string) -> string {
+	switch {
+	case strings.equal_fold(mime, "image/jpeg"), strings.equal_fold(mime, "image/jpg"):
+		return "JPG"
+	case strings.equal_fold(mime, "image/png"):
+		return "PNG"
+	case strings.equal_fold(mime, "image/gif"):
+		return "GIF"
+	case strings.equal_fold(mime, "image/bmp"):
+		return "BMP"
+	case len(mime) == 3:
+		return mime
+	}
+	return ""
+}

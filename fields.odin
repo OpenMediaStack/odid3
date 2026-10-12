@@ -2,6 +2,7 @@ package odid3
 
 import "base:runtime"
 import "core:mem"
+import "core:slice"
 import "core:strconv"
 import "core:strings"
 
@@ -634,4 +635,665 @@ append_clone :: proc(
 		return err
 	}
 	return nil
+}
+
+// Sets a field of a tag: the frames that hold it are replaced by one in the place of the first, or
+// one is added; an empty value removes them. A value equal to the one get gives leaves the tag as
+// it is. The new frame keeps the encoding and status flags of the one it replaces when that
+// encoding can hold the value, else it takes the version's default (UTF-8 in ID3v2.4; before,
+// Latin-1 when the text fits, else UTF-16). The value is written as one value, even in ID3v2.4.
+//
+// The date is ISO 8601, as get gives it ("2019", "2019-05-03", "2019-05-03T10:20"); before
+// ID3v2.4 it is split into TYER, TDAT and TIME, which cannot hold a month without its day, an
+// hour without its minutes, nor seconds (.Not_In_Version). The comment replaces the one get reads,
+// in its language and under its description; an empty comment removes every comment get could
+// read instead, ffmpeg's TXXX comment included, but iTunes' own. A value that is not one (a date
+// or a number that does not parse, a NUL) gives .Bad_Value. On any error the tag is left as it was.
+set :: proc(tag: ^Tag, field: Field, value: string) -> Error {
+	adopt_context_allocator(tag)
+	if tag.version == .None {
+		return .No_Version
+	}
+	if strings.index_byte(value, 0) >= 0 {
+		return .Bad_Value
+	}
+	current := get_tag_field(tag, field, tag.allocator) or_return
+	defer delete(current, tag.allocator)
+	if current == value {
+		return nil
+	}
+	switch field {
+	case .Title, .Artist, .Album_Artist, .Album:
+		return set_text(tag, field_ids(field), value)
+	case .Date:
+		return set_date(tag, value)
+	case .Track, .Track_Total, .Disc, .Disc_Total:
+		if value != "" && !is_number(value) {
+			return .Bad_Value
+		}
+		ids := TRACK_IDS if field == .Track || field == .Track_Total else DISC_IDS
+		pair := first_text(tag, ids, tag.allocator) or_return
+		defer delete(pair, tag.allocator)
+		number, total := split_pair(pair)
+		if field == .Track || field == .Disc {
+			number = value
+		} else {
+			total = value
+		}
+		return set_pair(tag, ids, number, total)
+	case .Genre:
+		if value == "" {
+			return set_genres(tag, nil)
+		}
+		return set_genres(tag, {value})
+	case .Comment:
+		return set_read_comment(tag, value)
+	}
+	return nil
+}
+
+// Sets the track number and total; 0 leaves a part out, and both 0 remove the frame. A number
+// below 0 or past 999999999 gives .Bad_Value.
+set_track :: proc(tag: ^Tag, number, total: int) -> Error {
+	return set_number_pair(tag, TRACK_IDS, number, total)
+}
+
+// Sets the disc number and total, as set_track does.
+set_disc :: proc(tag: ^Tag, number, total: int) -> Error {
+	return set_number_pair(tag, DISC_IDS, number, total)
+}
+
+// Sets the genres: several values in ID3v2.4, joined with "/" before. No genre removes the frame.
+set_genres :: proc(tag: ^Tag, genres: []string) -> Error {
+	adopt_context_allocator(tag)
+	if tag.version == .None {
+		return .No_Version
+	}
+	for genre in genres {
+		if strings.index_byte(genre, 0) >= 0 {
+			return .Bad_Value
+		}
+	}
+	return set_text_values(tag, GENRE_IDS, genres)
+}
+
+// Replaces the pictures of the same type with picture, in the place of the first, or adds it. Its
+// data is copied. ID3v2.2 names the image format in 3 letters: a MIME type it has no name for
+// gives .Not_In_Version.
+set_picture :: proc(tag: ^Tag, picture: Picture) -> Error {
+	adopt_context_allocator(tag)
+	if tag.version == .None {
+		return .No_Version
+	}
+	if strings.index_byte(picture.description, 0) >= 0 ||
+	   strings.index_byte(picture.mime, 0) >= 0 {
+		return .Bad_Value
+	}
+	id := "PIC" if tag.version == .V2_2 else "APIC"
+	p := picture
+	if !encoding_holds(p.encoding, tag.version, p.description) {
+		p.encoding = default_encoding(tag.version, p.description)
+	}
+	frame := encode_frame(p, id, tag.version, tag.allocator) or_return
+	remove := make([dynamic]int, tag.allocator)
+	defer delete(remove)
+	for &f, i in tag.frames {
+		if type, ok := picture_type_of(&f, tag.version); ok && type == picture.type {
+			if _, err := append(&remove, i); err != nil {
+				destroy_frame(&frame)
+				return err
+			}
+		}
+	}
+	return edit_frames(tag, remove[:], {frame})
+}
+
+// Removes the pictures of a type, or every picture when type is nil.
+remove_pictures :: proc(tag: ^Tag, type: Maybe(Picture_Type) = nil) {
+	wanted, only_one_type := type.?
+	for i := len(tag.frames) - 1; i >= 0; i -= 1 {
+		f := &tag.frames[i]
+		if f.id != "APIC" && f.id != "PIC" {
+			continue
+		}
+		if picture_type, ok := picture_type_of(f, tag.version);
+		   only_one_type && (!ok || picture_type != wanted) {
+			continue
+		}
+		remove_frame(tag, i)
+	}
+}
+
+// Sets the value of the TXXX frames with this description (ignoring case), replaced by one in the
+// place of the first, or adds one. An empty value removes them.
+set_user_text :: proc(tag: ^Tag, description, value: string) -> Error {
+	adopt_context_allocator(tag)
+	if tag.version == .None {
+		return .No_Version
+	}
+	if strings.index_byte(description, 0) >= 0 || strings.index_byte(value, 0) >= 0 {
+		return .Bad_Value
+	}
+	remove := make([dynamic]int, tag.allocator)
+	defer delete(remove)
+	previous: Maybe(Text_Format)
+	for &f, i in tag.frames {
+		if f.id != "TXXX" && f.id != "TXX" {
+			continue
+		}
+		content := decode_owned(&f, tag.version, tag.allocator) or_return
+		text, ok := content.(User_Text)
+		matches := ok && strings.equal_fold(text.description, description)
+		destroy_content(&content, tag.allocator)
+		if matches {
+			if previous == nil {
+				previous = Text_Format{text.encoding, f.status}
+			}
+			append(&remove, i) or_return
+		}
+	}
+	if value == "" {
+		return edit_frames(tag, remove[:], nil)
+	}
+	format := keep_format(previous, tag.version, description, value)
+	content := User_Text {
+		encoding    = format.encoding,
+		description = description,
+		values      = {value},
+	}
+	id := "TXX" if tag.version == .V2_2 else "TXXX"
+	frame := encode_frame(content, id, tag.version, tag.allocator) or_return
+	frame.status = format.status
+	return edit_frames(tag, remove[:], {frame})
+}
+
+// Sets the COMM frames with this description and language, replaced by one in the place of the
+// first, or adds one; empty text removes them. The language is 3 ASCII letters, such as "eng" or
+// "XXX" when unknown; anything else gives .Bad_Value.
+set_comment :: proc(tag: ^Tag, text: string, description := "", language := "eng") -> Error {
+	adopt_context_allocator(tag)
+	if tag.version == .None {
+		return .No_Version
+	}
+	lang, valid := comment_language(language)
+	if !valid || strings.index_byte(description, 0) >= 0 || strings.index_byte(text, 0) >= 0 {
+		return .Bad_Value
+	}
+	comments := comment_frames(tag) or_return
+	defer delete_comment_frames(&comments, tag.allocator)
+	remove := make([dynamic]int, tag.allocator)
+	defer delete(remove)
+	previous: Maybe(Text_Format)
+	for c in comments {
+		if c.description == description && c.language == lang {
+			if previous == nil {
+				previous = c.format
+			}
+			append(&remove, c.index) or_return
+		}
+	}
+	if text == "" {
+		return edit_frames(tag, remove[:], nil)
+	}
+	frame := comment_frame(tag, lang, description, text, previous) or_return
+	return edit_frames(tag, remove[:], {frame})
+}
+
+// The format of a text frame to keep when it is rewritten: its encoding and status flags.
+@(private)
+Text_Format :: struct {
+	encoding: Encoding,
+	status:   Frame_Status,
+}
+
+// The format of the frame being replaced when its encoding can hold the new values; else its
+// status flags with the version's default encoding.
+@(private)
+keep_format :: proc(
+	previous: Maybe(Text_Format),
+	version: V2_Version,
+	values: ..string,
+) -> Text_Format {
+	p, ok := previous.?
+	if ok && encoding_holds(p.encoding, version, ..values) {
+		return p
+	}
+	return {default_encoding(version, ..values), p.status}
+}
+
+// The encoding byte of a frame that starts with one.
+@(private)
+frame_encoding :: proc(f: ^Frame) -> (encoding: Encoding, ok: bool) {
+	if f.problem != .None && f.problem != .Bad_Data_Length || len(f.data) == 0 {
+		return
+	}
+	return encoding_of(f.data[0])
+}
+
+// Removes the frames at the indices in remove, in increasing order, and puts frames where the
+// first of them was, or at the end. Room is reserved before anything changes, so either the tag
+// is edited or it is left as it was. The tag takes the frames; they are freed on an error.
+@(private)
+edit_frames :: proc(tag: ^Tag, remove: []int, frames: []Frame) -> Error {
+	if err := reserve(&tag.frames, len(tag.frames) + len(frames)); err != nil {
+		for &f in frames {
+			destroy_frame(&f)
+		}
+		return err
+	}
+	#reverse for i in remove {
+		remove_frame(tag, i)
+	}
+	at := remove[0] if len(remove) > 0 else len(tag.frames)
+	for f, k in frames {
+		_, _ = inject_at(&tag.frames, at + k, f)
+	}
+	return nil
+}
+
+// The type of a picture frame, read from its bytes without decoding them.
+@(private)
+picture_type_of :: proc(f: ^Frame, version: V2_Version) -> (type: Picture_Type, ok: bool) {
+	if f.id != "APIC" && f.id != "PIC" || f.problem != .None && f.problem != .Bad_Data_Length {
+		return
+	}
+	at := 4
+	if f.id == "APIC" {
+		if len(f.data) < 2 {
+			return
+		}
+		mime_end := strings.index_byte(string(f.data[1:]), 0)
+		if mime_end < 0 {
+			return
+		}
+		at = 1 + mime_end + 1
+	}
+	if at >= len(f.data) {
+		return
+	}
+	return Picture_Type(f.data[at]), true
+}
+
+@(private)
+comment_language :: proc(language: string) -> (lang: [3]u8, ok: bool) {
+	if len(language) != 3 {
+		return
+	}
+	for i in 0 ..< 3 {
+		c := language[i]
+		if !(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') {
+			return
+		}
+		lang[i] = c
+	}
+	return lang, true
+}
+
+// A comment frame of a tag, as the setters need it.
+@(private)
+Comment_Frame :: struct {
+	index:       int,
+	language:    [3]u8,
+	description: string,
+	format:      Text_Format,
+}
+
+// The comment frames of a tag that decode. Free with delete_comment_frames.
+@(private)
+comment_frames :: proc(tag: ^Tag) -> (found: [dynamic]Comment_Frame, err: Error) {
+	found = make([dynamic]Comment_Frame, tag.allocator)
+	for &f, i in tag.frames {
+		if f.id != "COMM" && f.id != "COM" {
+			continue
+		}
+		content, decode_err := decode_owned(&f, tag.version, tag.allocator)
+		if decode_err != nil {
+			delete_comment_frames(&found, tag.allocator)
+			return nil, decode_err
+		}
+		defer destroy_content(&content, tag.allocator)
+		c, ok := content.(Comment)
+		if !ok {
+			continue
+		}
+		description, clone_err := strings.clone(c.description, tag.allocator)
+		if clone_err == nil {
+			_, clone_err = append(
+				&found,
+				Comment_Frame{i, c.language, description, {c.encoding, f.status}},
+			)
+			if clone_err != nil {
+				delete(description, tag.allocator)
+			}
+		}
+		if clone_err != nil {
+			delete_comment_frames(&found, tag.allocator)
+			return nil, clone_err
+		}
+	}
+	return found, nil
+}
+
+@(private)
+delete_comment_frames :: proc(found: ^[dynamic]Comment_Frame, allocator: runtime.Allocator) {
+	for c in found {
+		delete(c.description, allocator)
+	}
+	delete(found^)
+}
+
+@(private)
+comment_frame :: proc(
+	tag: ^Tag,
+	language: [3]u8,
+	description, text: string,
+	previous: Maybe(Text_Format),
+) -> (
+	frame: Frame,
+	err: Error,
+) {
+	format := keep_format(previous, tag.version, description, text)
+	content := Comment {
+		encoding    = format.encoding,
+		language    = language,
+		description = description,
+		text        = text,
+	}
+	frame = encode_frame(
+		content,
+		"COM" if tag.version == .V2_2 else "COMM",
+		tag.version,
+		tag.allocator,
+	) or_return
+	frame.status = format.status
+	return
+}
+
+// Appends to remove the TXXX frames with this description (ignoring case), and gives the format
+// of the first.
+@(private)
+find_user_text :: proc(
+	tag: ^Tag,
+	description: string,
+	remove: ^[dynamic]int,
+) -> (
+	previous: Maybe(Text_Format),
+	err: Error,
+) {
+	for &f, i in tag.frames {
+		if f.id != "TXXX" && f.id != "TXX" {
+			continue
+		}
+		content := decode_owned(&f, tag.version, tag.allocator) or_return
+		text, ok := content.(User_Text)
+		matches := ok && strings.equal_fold(text.description, description)
+		encoding := text.encoding
+		destroy_content(&content, tag.allocator)
+		if matches {
+			if previous == nil {
+				previous = Text_Format{encoding, f.status}
+			}
+			append(remove, i) or_return
+		}
+	}
+	return
+}
+
+// The comment get reads, rewritten: the first COMM without a description, else the first that is
+// not iTunes' own, else ffmpeg's TXXX comment. An empty value removes all of them.
+@(private)
+set_read_comment :: proc(tag: ^Tag, value: string) -> Error {
+	comments := comment_frames(tag) or_return
+	defer delete_comment_frames(&comments, tag.allocator)
+	remove := make([dynamic]int, tag.allocator)
+	defer delete(remove)
+	previous := find_user_text(tag, "comment", &remove) or_return
+	chosen := -1
+	for c, k in comments {
+		if c.description == "" {
+			chosen = k
+			break
+		}
+		if chosen < 0 && !strings.has_prefix(c.description, "iTun") {
+			chosen = k
+		}
+	}
+	if value == "" {
+		for c in comments {
+			if !strings.has_prefix(c.description, "iTun") {
+				append(&remove, c.index) or_return
+			}
+		}
+		slice.sort(remove[:])
+		return edit_frames(tag, remove[:], nil)
+	}
+	language := [3]u8{'e', 'n', 'g'}
+	description := ""
+	if chosen >= 0 {
+		c := comments[chosen]
+		language, description, previous = c.language, c.description, c.format
+		append(&remove, c.index) or_return
+	}
+	slice.sort(remove[:])
+	frame := comment_frame(tag, language, description, value, previous) or_return
+	return edit_frames(tag, remove[:], {frame})
+}
+
+@(private)
+field_ids :: proc(field: Field) -> []string {
+	#partial switch field {
+	case .Title:
+		return TITLE_IDS
+	case .Artist:
+		return ARTIST_IDS
+	case .Album_Artist:
+		return ALBUM_ARTIST_IDS
+	case .Album:
+		return ALBUM_IDS
+	}
+	return nil
+}
+
+// The ID a version uses among a field's IDs: the 4 letter one, or the 3 letter one in ID3v2.2.
+@(private)
+version_id :: proc(ids: []string, version: V2_Version) -> string {
+	for id in ids {
+		if (len(id) == 3) == (version == .V2_2) {
+			return id
+		}
+	}
+	return ids[0]
+}
+
+@(private)
+set_text :: proc(tag: ^Tag, ids: []string, value: string) -> Error {
+	if value == "" {
+		return set_text_values(tag, ids, nil)
+	}
+	return set_text_values(tag, ids, {value})
+}
+
+@(private)
+text_frame :: proc(
+	tag: ^Tag,
+	id: string,
+	values: []string,
+	previous: Maybe(Text_Format),
+) -> (
+	frame: Frame,
+	err: Error,
+) {
+	format := keep_format(previous, tag.version, ..values)
+	frame = encode_frame(Text{format.encoding, values}, id, tag.version, tag.allocator) or_return
+	frame.status = format.status
+	return
+}
+
+// Replaces the frames with one of ids by a text frame holding values, in the place of the first,
+// in its format when it can; no values removes them all.
+@(private)
+set_text_values :: proc(tag: ^Tag, ids: []string, values: []string) -> Error {
+	remove := make([dynamic]int, tag.allocator)
+	defer delete(remove)
+	previous: Maybe(Text_Format)
+	for &f, i in tag.frames {
+		if !contains(ids, f.id) {
+			continue
+		}
+		if encoding, ok := frame_encoding(&f); ok && previous == nil {
+			previous = Text_Format{encoding, f.status}
+		}
+		append(&remove, i) or_return
+	}
+	if len(values) == 0 {
+		return edit_frames(tag, remove[:], nil)
+	}
+	frame := text_frame(tag, version_id(ids, tag.version), values, previous) or_return
+	return edit_frames(tag, remove[:], {frame})
+}
+
+@(private)
+set_pair :: proc(tag: ^Tag, ids: []string, number, total: string) -> Error {
+	switch {
+	case number == "" && total == "":
+		return set_text_values(tag, ids, nil)
+	case total == "":
+		return set_text(tag, ids, number)
+	}
+	pair := strings.concatenate({number, "/", total}, tag.allocator) or_return
+	defer delete(pair, tag.allocator)
+	return set_text(tag, ids, pair)
+}
+
+@(private)
+MAX_NUMBER :: 999_999_999
+
+@(private)
+set_number_pair :: proc(tag: ^Tag, ids: []string, number, total: int) -> Error {
+	adopt_context_allocator(tag)
+	if tag.version == .None {
+		return .No_Version
+	}
+	if number < 0 || number > MAX_NUMBER || total < 0 || total > MAX_NUMBER {
+		return .Bad_Value
+	}
+	a, b: [20]u8
+	n := strconv.write_int(a[:], i64(number), 10) if number > 0 else ""
+	t := strconv.write_int(b[:], i64(total), 10) if total > 0 else ""
+	return set_pair(tag, ids, n, t)
+}
+
+// Every ID a date lives in: ID3v2.4's timestamp, then the parts of ID3v2.3 and 2.2.
+@(private, rodata)
+DATE_IDS := [7]string{"TDRC", "TYER", "TDAT", "TIME", "TYE", "TDA", "TIM"}
+
+// "2019-05-03T10:20" is TDRC in ID3v2.4; before, TYER "2019", TDAT "0305" (day then month) and
+// TIME "1020", or TYE, TDA and TIM in ID3v2.2.
+@(private)
+set_date :: proc(tag: ^Tag, value: string) -> Error {
+	parts := 0
+	if value != "" {
+		ok: bool
+		parts, ok = parse_date(value)
+		if !ok {
+			return .Bad_Value
+		}
+		if tag.version != .V2_4 && parts % 2 == 0 {
+			return .Not_In_Version
+		}
+	}
+	remove := make([dynamic]int, tag.allocator)
+	defer delete(remove)
+	formats: [len(DATE_IDS)]Maybe(Text_Format)
+	for &f, i in tag.frames {
+		k := -1
+		for id, j in DATE_IDS {
+			if f.id == id {
+				k = j
+			}
+		}
+		if k < 0 {
+			continue
+		}
+		if encoding, ok := frame_encoding(&f); ok && formats[k] == nil {
+			formats[k] = Text_Format{encoding, f.status}
+		}
+		append(&remove, i) or_return
+	}
+	day_month := [4]u8{value[8], value[9], value[5], value[6]} if parts >= 3 else {}
+	hours := [4]u8{value[11], value[12], value[14], value[15]} if parts >= 5 else {}
+	texts: [3]struct {
+		id:    int,
+		value: string,
+	}
+	n := 0
+	switch {
+	case parts == 0:
+	case tag.version == .V2_4:
+		texts[0] = {0, value}
+		n = 1
+	case:
+		shift := 3 if tag.version == .V2_2 else 0
+		texts[0] = {1 + shift, value[:4]}
+		n = 1
+		if parts >= 3 {
+			texts[1] = {2 + shift, string(day_month[:])}
+			n = 2
+		}
+		if parts >= 5 {
+			texts[2] = {3 + shift, string(hours[:])}
+			n = 3
+		}
+	}
+	frames: [3]Frame
+	for text, k in texts[:n] {
+		frame, err := text_frame(tag, DATE_IDS[text.id], {text.value}, formats[text.id])
+		if err != nil {
+			for &f in frames[:k] {
+				destroy_frame(&f)
+			}
+			return err
+		}
+		frames[k] = frame
+	}
+	return edit_frames(tag, remove[:], frames[:n])
+}
+
+// The number of parts of an ISO 8601 date as ID3v2.4 writes it, from "2019" (1) to
+// "2019-05-03T10:20:30" (6); ok is false for anything else.
+@(private)
+parse_date :: proc(s: string) -> (parts: int, ok: bool) {
+	field :: proc(s: string, at: int, lowest, highest: int) -> bool {
+		n, is_number := parse_number(s[at:at + 2])
+		return is_number && n >= lowest && n <= highest
+	}
+	switch len(s) {
+	case 4, 7, 10, 13, 16, 19:
+	case:
+		return 0, false
+	}
+	if !is_number(s[:4]) {
+		return 0, false
+	}
+	parts = 1
+	separators := "--T::"
+	limits := [5][2]int{{1, 12}, {1, 31}, {0, 23}, {0, 59}, {0, 59}}
+	for at := 4; at < len(s); at += 3 {
+		k := parts - 1
+		if s[at] != separators[k] || !field(s, at + 1, limits[k][0], limits[k][1]) {
+			return 0, false
+		}
+		parts += 1
+	}
+	return parts, true
+}
+// A tag made by hand has no allocator yet: it takes the context's, which then owns its frames.
+@(private)
+adopt_context_allocator :: proc(tag: ^Tag) {
+	if tag.allocator.procedure == nil {
+		tag.allocator = context.allocator
+	}
+	if tag.frames.allocator.procedure == nil {
+		tag.frames.allocator = tag.allocator
+	}
 }

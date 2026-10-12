@@ -4,7 +4,7 @@ The public API of odid3 as designed, before any library code exists. It is the r
 
 ## Principles
 
-- **The model is exact.** A `Tag` holds every frame as read, unknown ones included, with its flags and its content bytes. Writing a tag writes the model as it is: an untouched frame comes out byte for byte when the version is unchanged. Nothing is dropped except by an explicit call (`convert`, `remove_frame`, `set` with an empty value), and those return what they dropped.
+- **The model is exact.** A `Tag` holds every frame as read, unknown ones included, with its flags and its content bytes. Writing a tag writes the model as it is: an untouched frame comes out byte for byte when the version is unchanged. Nothing is dropped except by an explicit call (`convert`, which returns what it dropped, `remove_frame`, `set` with an empty value).
 - **Typed accessors sit on top of the frames.** `get` and `set` cover the common fields; `decode_frame` and `encode_frame` turn any frame's bytes into a typed value and back.
 - **Damage is not an error.** Reading returns an error only when nothing can be read (the file cannot be opened, a read fails, memory runs out). A damaged tag gives what could be read, plus warnings.
 - **Ownership is explicit.** Everything a procedure allocates comes from its `allocator` parameter, and its doc comment says how to free it: `destroy` for the library's types, or freeing the whole allocator when it is an arena.
@@ -211,9 +211,9 @@ Frame_Problem :: enum u8 {
 }
 
 // Copies id and data.
-make_frame :: proc(id: string, data: []u8, allocator := context.allocator) -> (frame: Frame, err: Error)
+make_frame :: proc(id: string, data: []u8, allocator := context.allocator) -> (Frame, runtime.Allocator_Error) #optional_allocator_error
 // The tag takes ownership of frame.
-add_frame :: proc(tag: ^Tag, frame: Frame) -> Error
+add_frame :: proc(tag: ^Tag, frame: Frame) -> runtime.Allocator_Error
 remove_frame :: proc(tag: ^Tag, index: int)
 find_frame :: proc(tag: ^Tag, id: string, start := 0) -> (index: int, ok: bool)
 ```
@@ -334,8 +334,10 @@ Fields :: bit_set[Field; u16]
 // "" when absent. On Tags, falls back to ID3v1 for the fields it has. Allocation errors are
 // optional results (#optional_allocator_error), so `title := get(&tags, .Title)` is fine.
 get :: proc{get_tag_field, get_file_field}
-// An empty value removes the field. The new frame takes the version's default encoding, an
-// existing one keeps its own when it can hold the value.
+// An empty value removes the field; the value get gives changes nothing. The new frame takes the
+// place, status flags and encoding of the one it replaces when that encoding can hold the value,
+// else the version's default. Dates are ISO 8601; ID3v2.3 and 2.2 cannot hold a month without its
+// day, an hour without its minutes, nor seconds. On any error the tag is left as it was.
 set :: proc(tag: ^Tag, field: Field, value: string) -> Error
 
 // On Tags, year and track fall back to ID3v1. They allocate nothing.
@@ -468,7 +470,8 @@ Format_Error :: enum u8 {
 	Tag_Too_Large, // over 256 MB, the largest syncsafe size, or a frame over its version's limit
 	Bad_Frame_Id, // not 3 (ID3v2.2) or 4 (ID3v2.3, 2.4) characters from A to Z and 0 to 9
 	Encoding_Not_In_Version, // UTF-16BE or UTF-8 below ID3v2.4
-	Not_Encodable, // Latin-1 cannot hold the text
+	Not_Encodable, // the chosen encoding cannot hold the text (Latin-1 holds 256 characters)
+	Bad_Value, // a date or number that does not parse, a NUL, a comment language that is not 3 letters
 	Not_In_Version, // a frame flag or a write option the version does not have
 	Not_Decodable, // decode_frame on an encrypted, damaged or skipped frame
 	Bad_Content, // frame bytes that do not follow the frame's layout
