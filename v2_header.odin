@@ -27,7 +27,19 @@ Tag :: struct {
 	version:   V2_Version,
 	revision:  u8,
 	flags:     Tag_Flags,
+	extended:  Extended_Header,
+	frames:    [dynamic]Frame,
+	padding:   int, // bytes of padding after the frames, as read
 	allocator: runtime.Allocator,
+}
+
+// The extended header of an ID3v2.3 or 2.4 tag, as read. Writing drops it.
+Extended_Header :: struct {
+	present:      bool,
+	crc:          Maybe(u32), // of the frames, plus the padding in ID3v2.4
+	padding_size: u32, // ID3v2.3
+	update:       bool, // ID3v2.4: this tag updates an earlier one
+	restrictions: Maybe(u8), // ID3v2.4, the raw byte
 }
 
 @(private)
@@ -119,4 +131,155 @@ tag_flags :: proc(major, b: u8) -> (flags: Tag_Flags) {
 		flags += {.Footer}
 	}
 	return
+}
+
+@(private)
+read_v2_tag :: proc(
+	src: ^Source,
+	range: Range,
+	header: V2_Header,
+	options: Read_Options,
+	warnings: ^Warnings,
+	allocator: runtime.Allocator,
+) -> (
+	tag: Tag,
+	err: Error,
+) {
+	tag = {
+		version   = v2_version(header.major),
+		revision  = header.revision,
+		flags     = tag_flags(header.major, header.flags),
+		frames    = make([dynamic]Frame, allocator),
+		allocator = allocator,
+	}
+	defer if err != nil {
+		destroy_tag(&tag)
+	}
+	if tag.version != .V2_3 && tag.version != .V2_4 {
+		return
+	}
+	end := range.offset + V2_HEADER_SIZE + header.size
+	body := Body {
+		src       = src,
+		start     = range.offset + V2_HEADER_SIZE,
+		end       = min(end, src.size),
+		truncated = end > src.size,
+	}
+	if .Extended_Header in tag.flags {
+		start, ok := read_extended_header(&tag, &body, warnings) or_return
+		if ok {
+			body.start = start
+		} else if (frame_start_at(&body, body.start) or_return) != .Frame {
+			return
+		}
+		// Otherwise the flag lied, as some taggers' did: the frames start right after the header.
+	}
+	read_frames(&tag, &body, options, warnings) or_return
+	return
+}
+
+// Reads the extended header at the start of the body and returns where the frames start. ok is
+// false when the size of the extended header cannot be trusted.
+@(private)
+read_extended_header :: proc(
+	tag: ^Tag,
+	body: ^Body,
+	warnings: ^Warnings,
+) -> (
+	frames_start: i64,
+	ok: bool,
+	err: Error,
+) {
+	buf: [16]u8
+	b := source_bytes(body.src, body.start, buf[:min(body.end - body.start, len(buf))]) or_return
+	available := body.end - body.start
+	size: i64
+	good: bool
+	if tag.version == .V2_3 {
+		size, good = extended_header_v23(tag, b)
+	} else {
+		size, good = extended_header_v24(tag, b)
+	}
+	if !good {
+		warnings^ += {.Bad_Extended_Header}
+	}
+	if size <= 0 || size > available {
+		warnings^ += {.Bad_Extended_Header}
+		return 0, false, nil
+	}
+	return body.start + size, true, nil
+}
+
+// An ID3v2.3 extended header: its size without these 4 bytes (6, or 10 with a CRC), 2 flag bytes
+// (0x80 means a CRC follows), the padding size, then the CRC.
+@(private)
+extended_header_v23 :: proc(tag: ^Tag, b: []u8) -> (size: i64, good: bool) {
+	if len(b) < 10 {
+		return 0, false
+	}
+	content := be32(b[0:4])
+	size = 4 + i64(content)
+	has_crc := b[4] & 0x80 != 0
+	if content != 6 && content != 10 || has_crc != (content == 10) || len(b) < int(size) {
+		return size, false
+	}
+	tag.extended = {
+		present      = true,
+		padding_size = be32(b[6:10]),
+	}
+	if has_crc {
+		tag.extended.crc = be32(b[10:14])
+	}
+	return size, true
+}
+
+// An ID3v2.4 extended header: its syncsafe size, these 4 bytes included, the number of flag bytes
+// (always 1), the flags, then for each flag set, the length of its data and the data: nothing for
+// an update, a CRC-32 as 5 syncsafe bytes, the restrictions byte.
+@(private)
+extended_header_v24 :: proc(tag: ^Tag, b: []u8) -> (size: i64, good: bool) {
+	if len(b) < 6 {
+		return 0, false
+	}
+	n, syncsafe_ok := syncsafe(b[0:4])
+	size = i64(n)
+	if !syncsafe_ok || size < 6 || b[4] != 1 || len(b) < int(min(size, 16)) {
+		return size if syncsafe_ok else 0, false
+	}
+	flags := b[5]
+	at := 6
+	extended := Extended_Header {
+		present = true,
+	}
+	if flags & 0x40 != 0 {
+		if at >= len(b) || b[at] != 0 {
+			return size, false
+		}
+		extended.update = true
+		at += 1
+	}
+	if flags & 0x20 != 0 {
+		// 32 bits in 5 syncsafe bytes: the first holds 4 of them.
+		if at + 6 > len(b) || b[at] != 5 || b[at + 1] > 0x0F {
+			return size, false
+		}
+		crc: u64
+		for c in b[at + 1:at + 6] {
+			crc = crc << 7 | u64(c & 0x7F)
+		}
+		extended.crc = u32(crc)
+		at += 6
+	}
+	if flags & 0x10 != 0 {
+		if at + 2 > len(b) || b[at] != 1 {
+			return size, false
+		}
+		extended.restrictions = b[at + 1]
+		at += 2
+	}
+	if i64(at) > size {
+		return size, false
+	}
+	tag.extended = extended
+	return size, true
 }

@@ -138,3 +138,30 @@ failing_allocator_proc :: proc(
 text :: proc(s: string) -> []u8 {
 	return transmute([]u8)s
 }
+
+// A frame of an ID3v2.3 tag (plain size) or ID3v2.4 tag (syncsafe size).
+frame :: proc(major: u8, id: string, data: []u8, status: u8 = 0, format: u8 = 0) -> []u8 {
+	n := len(data)
+	size: []u8
+	if major == 4 {
+		size = {u8(n >> 21) & 0x7F, u8(n >> 14) & 0x7F, u8(n >> 7) & 0x7F, u8(n) & 0x7F}
+	} else {
+		size = {u8(n >> 24), u8(n >> 16), u8(n >> 8), u8(n)}
+	}
+	return concat(transmute([]u8)id, size, {status, format}, data)
+}
+
+// An ID3v2 tag holding body (frames and padding), followed by a little audio.
+tag_file :: proc(major, flags: u8, body: ..[]u8) -> []u8 {
+	content := concat(..body)
+	return concat(v2_header(major, flags, len(content)), content, {0xFF, 0xFB, 0x90, 0x00})
+}
+
+// n lowercase letters, which can be neither a frame ID nor padding.
+letters :: proc(n: int) -> []u8 {
+	out := make([]u8, n, context.temp_allocator)
+	for &c, i in out {
+		c = 'a' + u8(i % 26)
+	}
+	return out
+}

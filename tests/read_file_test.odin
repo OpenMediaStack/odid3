@@ -1,5 +1,6 @@
 package odid3_tests
 
+import "core:bytes"
 import "core:mem"
 import "core:os"
 import "core:testing"
@@ -20,6 +21,26 @@ read_file_finds_what_read_bytes_finds :: proc(t: ^testing.T) {
 		testing.expectf(t, from_file.v2.flags == from_bytes.v2.flags, "%s: flags differ", name)
 		testing.expectf(t, from_file.v2.revision == from_bytes.v2.revision, "%s: revision", name)
 		testing.expectf(t, from_file.v1 == from_bytes.v1, "%s: v1 differs", name)
+		testing.expectf(t, from_file.v2.padding == from_bytes.v2.padding, "%s: padding", name)
+		testing.expectf(t, from_file.v2.extended == from_bytes.v2.extended, "%s: extended", name)
+		file_frames, bytes_frames := from_file.v2.frames[:], from_bytes.v2.frames[:]
+		testing.expectf(t, len(file_frames) == len(bytes_frames), "%s: frames differ", name)
+		for i in 0 ..< min(len(file_frames), len(bytes_frames)) {
+			a, b := file_frames[i], bytes_frames[i]
+			same :=
+				a.id == b.id &&
+				a.offset == b.offset &&
+				a.size == b.size &&
+				a.status == b.status &&
+				a.format == b.format &&
+				a.group == b.group &&
+				a.method == b.method &&
+				a.problem == b.problem &&
+				a.stored_flags == b.stored_flags &&
+				a.data_length == b.data_length &&
+				bytes.equal(a.data, b.data)
+			testing.expectf(t, same, "%s: frame %d differs", name, i)
+		}
 		odid3.destroy(&from_file)
 		odid3.destroy(&from_bytes)
 	}
@@ -52,7 +73,7 @@ large_file_with_tags_at_both_ends :: proc(t: ^testing.T) {
 	read_err: odid3.Error
 	{
 		context.allocator = allocator
-		tags, read_err = odid3.read_file(path, allocator)
+		tags, read_err = odid3.read_file(path, {}, allocator)
 	}
 	defer odid3.destroy(&tags)
 	testing.expect_value(t, read_err, nil)

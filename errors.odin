@@ -21,6 +21,19 @@ Warning :: enum u8 {
 	Unsupported_Version,
 	// Another ID3v2 tag right after the first one. Writing replaces both with a single tag.
 	Second_V2_Tag,
+	// A frame header that cannot be right: the frames after it are lost.
+	Damaged_Frames,
+	// An extended header that cannot be right. When its size cannot be trusted either, the frames
+	// are lost.
+	Bad_Extended_Header,
+	// Bytes other than zeros after the last frame, where the padding is.
+	Data_In_Padding,
+	// ID3v2.4 frame sizes written as plain integers rather than syncsafe ones, as old iTunes did.
+	Plain_Frame_Sizes,
+	// Frame IDs with characters other than A to Z and 0 to 9: the frames are kept.
+	Bad_Frame_Ids,
+	// At least one frame has a problem that is not of its own choosing: see Frame.problem.
+	Frame_Problems,
 }
 
 // Every warning reading raised.

@@ -56,7 +56,7 @@ read_through_spy :: proc(t: ^testing.T, path: string, spy: ^Spy) -> (tags: Tags,
 	spy.inner = inner
 	spy.file.stream.procedure = spy_proc
 	src := file_source(&spy.file) or_return
-	return read_source(&src, context.allocator)
+	return read_source(&src, {}, context.allocator)
 }
 
 @(private = "file")
