@@ -1,6 +1,6 @@
 #!/bin/bash
 # Regenerates odid3's fixtures and what ffprobe reads in them. Run from anywhere: ./testdata/make.sh
-# Needs ffmpeg and ffprobe.
+# Needs ffmpeg, ffprobe and Python 3 (standard library only).
 #
 # Every fixture holds 0.1 s of generated silence, so no fixture carries third party content. The
 # bitexact flags keep ffmpeg's version out of the files. Files that ffmpeg cannot write are built
