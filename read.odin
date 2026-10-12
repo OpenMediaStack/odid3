@@ -19,8 +19,16 @@ read_bytes :: proc(data: []u8, allocator := context.allocator) -> (tags: Tags, e
 }
 
 // Reads the tags of the file at path. Only the tags are read, never the audio between them. Free
-// the result with destroy. A damaged tag gives what could be read, and warnings.
+// the result with destroy. A damaged tag gives what could be read, and warnings. A path that is not
+// a regular file (a directory, a device, a pipe) gives os.General_Error.Invalid_File.
 read_file :: proc(path: string, allocator := context.allocator) -> (tags: Tags, err: Error) {
+	// Checked before opening: opening a named pipe waits until something writes to it.
+	info := os.stat(path, allocator) or_return
+	type := info.type
+	os.file_info_delete(info, allocator)
+	if type != .Regular {
+		return {}, os.Error(os.General_Error.Invalid_File)
+	}
 	f := os.open(path) or_return
 	defer os.close(f)
 	src := file_source(f) or_return

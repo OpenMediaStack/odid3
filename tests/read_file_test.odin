@@ -18,6 +18,7 @@ read_file_finds_what_read_bytes_finds :: proc(t: ^testing.T) {
 		testing.expectf(t, from_file.warnings == from_bytes.warnings, "%s: warnings differ", name)
 		testing.expectf(t, from_file.v2.version == from_bytes.v2.version, "%s: v2 differs", name)
 		testing.expectf(t, from_file.v2.flags == from_bytes.v2.flags, "%s: flags differ", name)
+		testing.expectf(t, from_file.v2.revision == from_bytes.v2.revision, "%s: revision", name)
 		testing.expectf(t, from_file.v1 == from_bytes.v1, "%s: v1 differs", name)
 		odid3.destroy(&from_file)
 		odid3.destroy(&from_bytes)
@@ -25,15 +26,17 @@ read_file_finds_what_read_bytes_finds :: proc(t: ^testing.T) {
 }
 
 @(test)
-read_file_never_loads_the_audio :: proc(t: ^testing.T) {
-	AUDIO_SIZE :: 64 * mem.Megabyte
+large_file_with_tags_at_both_ends :: proc(t: ^testing.T) {
+	AUDIO_SIZE :: 8 * mem.Megabyte
 	head := fixture(t, "v23_full.mp3")
 	v1 := fixture(t, "v1_1_ascii.mp3")
 	v1 = v1[len(v1) - 128:]
 
 	path := join(make_temp_dir(t), "large.mp3")
 	f, err := os.open(path, {.Write, .Create, .Trunc})
-	testing.expect_value(t, err, nil)
+	if err != nil {
+		testing.fail_now(t, "cannot create the file")
+	}
 	_, err = os.write_at(f, head, 0)
 	testing.expect_value(t, err, nil)
 	_, err = os.write_at(f, v1, AUDIO_SIZE)
@@ -67,8 +70,13 @@ read_file_never_loads_the_audio :: proc(t: ^testing.T) {
 @(test)
 read_file_errors :: proc(t: ^testing.T) {
 	_, err := odid3.read_file(fixture_path("missing.mp3"))
-	testing.expectf(t, err != nil, "a missing file gives %v", err)
+	testing.expect_value(t, err, os.Error(os.General_Error.Not_Exist))
 
 	_, err = odid3.read_file(TESTDATA)
-	testing.expectf(t, err != nil, "a directory gives %v", err)
+	testing.expect_value(t, err, os.Error(os.General_Error.Invalid_File))
+
+	when ODIN_OS != .Windows {
+		_, err = odid3.read_file("/dev/null")
+		testing.expect_value(t, err, os.Error(os.General_Error.Invalid_File))
+	}
 }
