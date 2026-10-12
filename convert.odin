@@ -80,11 +80,14 @@ clone_frame :: proc(f: ^Frame, allocator: runtime.Allocator) -> (duplicate: Fram
 }
 
 // Converts a tag to another version: renames and merges frames (TYER, TDAT and TIME into TDRC,
-// TORY into TDOR, IPLS into TIPL, and back), converts the frames inside chapters, re-encodes text
-// the target cannot hold, joins several values with "/" for ID3v2.3, and removes the frames it
-// cannot carry. It returns, in their order, the frames it removed and those whose value it could
-// only carry in part, each with the reason. From .None it only sets the version; to .None it
-// removes every frame. On an error the tag is left as it was. Free the result with destroy.
+// TORY into TDOR, IPLS into TIPL, and back; ID3v2.2's 3 letter IDs to 4 letters and back, PIC
+// into APIC), converts the frames inside chapters, re-encodes text the target cannot hold, joins
+// several values with "/" before ID3v2.4, and removes the frames it cannot carry; ID3v2.2 frames
+// have no flags, so they lose theirs. It returns, in their order, the frames it removed and those
+// whose value it could only carry in part, each with the reason. From .None it only sets the
+// version; to .None it removes every frame. Tags whose frames were not all read (a compressed
+// ID3v2.2 tag, pictures skipped when they need a new layout) give .Incomplete_Tag. On an error
+// the tag is left as it was. Free the result with destroy.
 convert :: proc(
 	tag: ^Tag,
 	to: V2_Version,
@@ -96,17 +99,18 @@ convert :: proc(
 	adopt_context_allocator(tag)
 	from := tag.version
 	switch {
-	case from == .V2_2 || to == .V2_2:
-		return nil, .Not_In_Version
 	case from == to:
 		return nil, nil
 	case from == .None:
 		tag.version = to
 		return nil, nil
+	case .Compression in tag.flags && to != .None:
+		// A compressed ID3v2.2 tag: no scheme was ever defined, so its frames could not be read.
+		return nil, .Incomplete_Tag
 	}
 	work := clone_tag(tag, tag.allocator) or_return
 	list := make(Dropped_Frames, allocator)
-	if err = convert_frames(&work, to, &list, allocator); err != nil {
+	if err = convert_versions(&work, to, &list, allocator); err != nil {
 		destroy_tag(&work)
 		destroy_dropped(&list, allocator)
 		return nil, err
@@ -116,8 +120,35 @@ convert :: proc(
 	return list, nil
 }
 
-// Converts the frames of a tag in place; on an error the tag is left half converted, which is why
-// convert works on a copy.
+// ID3v2.2 is converted through ID3v2.3, whose frames it renames.
+@(private)
+convert_versions :: proc(
+	tag: ^Tag,
+	to: V2_Version,
+	dropped: ^Dropped_Frames,
+	allocator: runtime.Allocator,
+) -> Error {
+	if to == .None {
+		return convert_frames(tag, to, dropped, allocator)
+	}
+	if tag.version == .V2_2 {
+		convert_from_v22(tag, dropped, allocator) or_return
+	}
+	// Going to ID3v2.2, an ID3v2.3 tag needs the same care as one from ID3v2.4: dates, people and
+	// text in ID3v2.3's form first.
+	middle := V2_Version.V2_3 if to == .V2_2 else to
+	if tag.version != middle || to == .V2_2 {
+		convert_frames(tag, middle, dropped, allocator) or_return
+	}
+	if to == .V2_2 {
+		convert_to_v22(tag, dropped, allocator) or_return
+	}
+	tag.flags = {}
+	return nil
+}
+
+// Converts the frames of a tag in place between ID3v2.3 and 2.4; on an error the tag is left half
+// converted, which is why convert works on a copy.
 @(private)
 convert_frames :: proc(
 	tag: ^Tag,
@@ -438,6 +469,236 @@ people_of_frame :: proc(
 	return true, nil
 }
 
+// Renames ID3v2.2 frames to their ID3v2.3 IDs, turns PIC into APIC, and drops the frames ID3v2.3
+// has no frame for.
+@(private)
+convert_from_v22 :: proc(
+	tag: ^Tag,
+	dropped: ^Dropped_Frames,
+	allocator: runtime.Allocator,
+) -> Error {
+	for i := 0; i < len(tag.frames); {
+		f := &tag.frames[i]
+		id := v22_to_v23(f.id)
+		switch {
+		case id == "":
+			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
+		case f.id == "PIC" && !(change_picture_layout(tag, i, .V2_2, .V2_3) or_return):
+			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
+		case f.id == "PIC":
+			i += 1
+		case:
+			rename_frame(f, id) or_return
+			i += 1
+		}
+	}
+	tag.version = .V2_3
+	return nil
+}
+
+// Renames ID3v2.3 frames to their ID3v2.2 IDs, turns APIC into PIC, and drops the frames ID3v2.2
+// cannot hold: those without an ID3v2.2 ID, and those whose flags it has no room for.
+@(private)
+convert_to_v22 :: proc(
+	tag: ^Tag,
+	dropped: ^Dropped_Frames,
+	allocator: runtime.Allocator,
+) -> Error {
+	for i := 0; i < len(tag.frames); {
+		f := &tag.frames[i]
+		id := v23_to_v22(f.id)
+		switch {
+		case f.problem == .Too_Short:
+			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
+		case is_stored(f) || .Encryption in f.format:
+			drop(tag, i, .Encrypted, dropped, allocator) or_return
+		case id == "":
+			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
+		case f.id == "APIC" && !(change_picture_layout(tag, i, .V2_3, .V2_2) or_return):
+			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
+		case f.id == "APIC":
+			i += 1
+		case:
+			if f.id == "RVAD" && (stereo_volume_only(f) or_return) {
+				note(dropped, "RVAD", .Partly_Converted, allocator) or_return
+			}
+			rename_frame(f, id) or_return
+			// ID3v2.2 frames have no flags.
+			f.status, f.format = {}, {}
+			i += 1
+		}
+	}
+	tag.version = .V2_2
+	return nil
+}
+
+// ID3v2.2's RVA holds the volume of the right and left channels; ID3v2.3's RVAD can add the back,
+// centre and bass channels after them, which are cut. cut is true when there were some.
+@(private)
+stereo_volume_only :: proc(f: ^Frame) -> (cut: bool, err: Error) {
+	if len(f.data) < 2 || f.problem != .None {
+		return false, nil
+	}
+	stereo := 2 + 4 * ((int(f.data[1]) + 7) / 8)
+	if len(f.data) <= stereo {
+		return false, nil
+	}
+	f.data = shrink(f.data, stereo, f.allocator) or_return
+	return true, nil
+}
+
+@(private)
+rename_frame :: proc(f: ^Frame, id: string) -> runtime.Allocator_Error {
+	renamed := strings.clone(id, f.allocator) or_return
+	delete(f.id, f.allocator)
+	f.id = renamed
+	return nil
+}
+
+// APIC holds a MIME type where PIC holds a 3 character image format: the picture is decoded and
+// encoded again. ok is false when it cannot be decoded.
+@(private)
+change_picture_layout :: proc(
+	tag: ^Tag,
+	index: int,
+	from, to: V2_Version,
+) -> (
+	ok: bool,
+	err: Error,
+) {
+	f := &tag.frames[index]
+	if f.problem == .Skipped_Picture {
+		return false, .Incomplete_Tag
+	}
+	content, decode_err := decode_frame(f, from, tag.allocator)
+	defer destroy_content(&content, tag.allocator)
+	if alloc, is_alloc := decode_err.(runtime.Allocator_Error); is_alloc {
+		return false, alloc
+	}
+	picture, is_picture := content.(Picture)
+	if decode_err != nil || !is_picture {
+		return false, nil
+	}
+	if !encoding_holds(picture.encoding, to) {
+		picture.encoding = .Latin1 if fits_all_latin1(picture.description) else .UTF16
+	}
+	replacement, encode_err := encode_frame(
+		picture,
+		"PIC" if to == .V2_2 else "APIC",
+		to,
+		tag.allocator,
+	)
+	if encode_err == Error(Format_Error.Not_In_Version) {
+		// A MIME type ID3v2.2 has no 3 letter name for.
+		return false, nil
+	}
+	if encode_err != nil {
+		return false, encode_err
+	}
+	if to != .V2_2 {
+		replacement.status = f.status
+	}
+	destroy_frame(f)
+	f^ = replacement
+	return true, nil
+}
+
+// ID3v2.2 IDs and their ID3v2.3 counterparts, iTunes' own included. LNK and CRM are missing: their
+// layouts have no counterpart.
+@(private, rodata)
+V22_IDS := [?][2]string {
+	{"BUF", "RBUF"},
+	{"CNT", "PCNT"},
+	{"COM", "COMM"},
+	{"CRA", "AENC"},
+	{"EQU", "EQUA"},
+	{"ETC", "ETCO"},
+	{"GEO", "GEOB"},
+	{"GP1", "GRP1"},
+	{"IPL", "IPLS"},
+	{"MCI", "MCDI"},
+	{"MLL", "MLLT"},
+	{"MVI", "MVIN"},
+	{"MVN", "MVNM"},
+	{"PIC", "APIC"},
+	{"POP", "POPM"},
+	{"REV", "RVRB"},
+	{"RVA", "RVAD"},
+	{"SLT", "SYLT"},
+	{"STC", "SYTC"},
+	{"TAL", "TALB"},
+	{"TBP", "TBPM"},
+	{"TCM", "TCOM"},
+	{"TCO", "TCON"},
+	{"TCP", "TCMP"},
+	{"TCR", "TCOP"},
+	{"TDA", "TDAT"},
+	{"TDY", "TDLY"},
+	{"TEN", "TENC"},
+	{"TFT", "TFLT"},
+	{"TIM", "TIME"},
+	{"TKE", "TKEY"},
+	{"TLA", "TLAN"},
+	{"TLE", "TLEN"},
+	{"TMT", "TMED"},
+	{"TOA", "TOPE"},
+	{"TOF", "TOFN"},
+	{"TOL", "TOLY"},
+	{"TOR", "TORY"},
+	{"TOT", "TOAL"},
+	{"TP1", "TPE1"},
+	{"TP2", "TPE2"},
+	{"TP3", "TPE3"},
+	{"TP4", "TPE4"},
+	{"TPA", "TPOS"},
+	{"TPB", "TPUB"},
+	{"TRC", "TSRC"},
+	{"TRD", "TRDA"},
+	{"TRK", "TRCK"},
+	{"TS2", "TSO2"},
+	{"TSA", "TSOA"},
+	{"TSC", "TSOC"},
+	{"TSI", "TSIZ"},
+	{"TSP", "TSOP"},
+	{"TSS", "TSSE"},
+	{"TST", "TSOT"},
+	{"TT1", "TIT1"},
+	{"TT2", "TIT2"},
+	{"TT3", "TIT3"},
+	{"TXT", "TEXT"},
+	{"TXX", "TXXX"},
+	{"TYE", "TYER"},
+	{"UFI", "UFID"},
+	{"ULT", "USLT"},
+	{"WAF", "WOAF"},
+	{"WAR", "WOAR"},
+	{"WAS", "WOAS"},
+	{"WCM", "WCOM"},
+	{"WCP", "WCOP"},
+	{"WPB", "WPUB"},
+	{"WXX", "WXXX"},
+}
+
+@(private)
+v22_to_v23 :: proc(id: string) -> string {
+	for pair in V22_IDS {
+		if pair[0] == id {
+			return pair[1]
+		}
+	}
+	return ""
+}
+
+@(private)
+v23_to_v22 :: proc(id: string) -> string {
+	for pair in V22_IDS {
+		if pair[1] == id {
+			return pair[0]
+		}
+	}
+	return ""
+}
+
 // Frees the IDs of dropped frames and the list.
 destroy_dropped :: proc(dropped: ^Dropped_Frames, allocator := context.allocator) {
 	for d in dropped {
@@ -580,7 +841,7 @@ conversion_drop :: proc(f: ^Frame, from, to: V2_Version) -> (reason: Drop_Reason
 	}
 	// Before ID3v2.4, a compressed frame states its decompressed size, which an encrypted or
 	// badly compressed frame from ID3v2.4 may not have given.
-	as_stored := f.problem == .Encrypted || f.problem == .Bad_Compression
+	as_stored := is_stored(f) && f.problem != .Too_Short
 	if as_stored && .Compression in f.format && f.data_length < 0 {
 		return .Encrypted, true
 	}
@@ -778,9 +1039,7 @@ date_to_v23 :: proc(
 @(private)
 convert_text :: proc(tag: ^Tag, index: int) -> (ok: bool, err: Error) {
 	f := &tag.frames[index]
-	as_stored :=
-		f.problem == .Encrypted || f.problem == .Bad_Compression || f.problem == .Too_Short
-	if as_stored || !has_encoding_byte(f.id) || len(f.data) == 0 {
+	if is_stored(f) || !has_encoding_byte(f.id) || len(f.data) == 0 {
 		return true, nil
 	}
 	encoding, known := encoding_of(f.data[0])

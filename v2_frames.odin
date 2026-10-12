@@ -67,6 +67,20 @@ Frame_Problem :: enum u8 {
 	Nested_Chapter,
 }
 
+// Whether a frame's data is its bytes as stored rather than its content: encrypted, badly
+// compressed, too short for its flags, or compressed or encrypted behind an unsynchronisation
+// flag that lied.
+@(private)
+is_stored :: proc(f: ^Frame) -> bool {
+	lied := f.problem == .Bad_Unsynchronisation && f.format & {.Compression, .Encryption} != {}
+	return(
+		f.problem == .Encrypted ||
+		f.problem == .Bad_Compression ||
+		f.problem == .Too_Short ||
+		lied \
+	)
+}
+
 // The first frame with this ID at or after start.
 find_frame :: proc(tag: ^Tag, id: string, start := 0) -> (index: int, ok: bool) {
 	for i in max(start, 0) ..< len(tag.frames) {

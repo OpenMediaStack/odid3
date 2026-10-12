@@ -341,7 +341,7 @@ byte_order_of :: proc(encoding: Encoding, first: []u8) -> Encoding {
 @(private)
 is_itunes_text_frame :: proc(id: string) -> bool {
 	switch id {
-	case "WFED", "GRP1", "MVNM", "MVIN":
+	case "WFED", "GRP1", "MVNM", "MVIN", "GP1", "MVN", "MVI":
 		return true
 	}
 	return false
@@ -811,9 +811,11 @@ append_counter :: proc(data: ^[dynamic]u8, counter: u64) -> runtime.Allocator_Er
 @(private)
 v22_image_format :: proc(mime: string) -> string {
 	switch {
-	case strings.equal_fold(mime, "image/jpeg"), strings.equal_fold(mime, "image/jpg"):
+	case strings.equal_fold(mime, "image/jpeg"),
+	     strings.equal_fold(mime, "image/jpg"),
+	     strings.equal_fold(mime, "image/pjpeg"):
 		return "JPG"
-	case strings.equal_fold(mime, "image/png"):
+	case strings.equal_fold(mime, "image/png"), strings.equal_fold(mime, "image/x-png"):
 		return "PNG"
 	case strings.equal_fold(mime, "image/gif"):
 		return "GIF"

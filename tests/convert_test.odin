@@ -423,19 +423,6 @@ compressed_and_encrypted_frames_keep_their_size :: proc(t: ^testing.T) {
 }
 
 @(test)
-v22_comes_with_its_own_slice :: proc(t: ^testing.T) {
-	v22 := read(t, fixture(t, "v22.mp3"))
-	defer odid3.destroy(&v22)
-	_, err := odid3.convert(&v22.v2, .V2_4, context.temp_allocator)
-	testing.expect_value(t, err, odid3.Error(odid3.Format_Error.Not_In_Version))
-	testing.expect_value(t, v22.v2.version, odid3.V2_Version.V2_2)
-	v23 := read(t, fixture(t, "v23_full.mp3"))
-	defer odid3.destroy(&v23)
-	_, err = odid3.convert(&v23.v2, .V2_2, context.temp_allocator)
-	testing.expect_value(t, err, odid3.Error(odid3.Format_Error.Not_In_Version))
-}
-
-@(test)
 a_failed_conversion_leaves_the_tag_as_it_was :: proc(t: ^testing.T) {
 	data := tag_file(
 		4,
@@ -475,4 +462,203 @@ a_failed_conversion_leaves_the_tag_as_it_was :: proc(t: ^testing.T) {
 		}
 	}
 	testing.expect(t, succeeded)
+}
+
+@(test)
+v22_tags_convert_both_ways :: proc(t: ^testing.T) {
+	for name in ([]string{"v22.mp3", "v22_pic.mp3"}) {
+		tags := read(t, fixture(t, name))
+		defer odid3.destroy(&tags)
+		before := all_fields(&tags.v2)
+		pictures_before := len(odid3.pictures(&tags.v2, context.temp_allocator))
+		for to in ([]odid3.V2_Version{.V2_3, .V2_4, .V2_2}) {
+			dropped := convert(t, &tags.v2, to)
+			testing.expectf(t, len(dropped) == 0, "%s to %v: dropped %v", name, to, dropped)
+			rendered, err := odid3.render(&tags.v2, {}, context.temp_allocator)
+			testing.expectf(t, err == nil, "%s to %v: %v", name, to, err)
+			again := read(t, rendered)
+			defer odid3.destroy(&again)
+			testing.expect_value(t, again.v2.version, to)
+			testing.expect_value(t, all_fields(&again.v2), before)
+			all := odid3.pictures(&again.v2, context.temp_allocator)
+			testing.expect_value(t, len(all), pictures_before)
+			for p in all {
+				testing.expect_value(t, p.mime, "image/png")
+				testing.expect_value(t, p.type, odid3.Picture_Type.Front_Cover)
+			}
+		}
+	}
+}
+
+@(test)
+v24_tags_to_v22 :: proc(t: ^testing.T) {
+	tags := read(t, fixture(t, "v24_full.mp3"))
+	defer odid3.destroy(&tags)
+	before := all_fields(&tags.v2)
+	dropped := convert(t, &tags.v2, .V2_2)
+	testing.expect_value(t, len(dropped), 0)
+	// The date stays where TDRC was.
+	ids := [?]string{"TT2", "TP1", "TP2", "TAL", "TYE", "TRK", "TPA", "TCO", "TXX", "TPB", "TXX"}
+	for &f, i in tags.v2.frames {
+		testing.expectf(t, i < len(ids) && f.id == ids[i], "frame %d is %s", i, f.id)
+		testing.expectf(t, f.data[0] <= 1, "%s in encoding %d", f.id, f.data[0])
+	}
+	testing.expect_value(t, all_fields(&tags.v2), before)
+}
+
+@(test)
+frames_v22_cannot_hold :: proc(t: ^testing.T) {
+	frames := concat(
+		frame(4, "PRIV", text("owner\x00data")),
+		frame(4, "TIT2", text("\x03Title")),
+		frame(4, "PCNT", {0, 0, 0, 1}, 0, 0x40),
+		frame(4, "TPE1", concat({0x80}, text("secret")), 0, 0x04),
+	)
+	tags := read(t, tag_file(4, 0, frames))
+	defer odid3.destroy(&tags)
+	dropped := convert(t, &tags.v2, .V2_2)
+	want := []odid3.Dropped_Frame{{"PRIV", .No_Equivalent}, {"TPE1", .Encrypted}}
+	testing.expect_value(t, len(dropped), len(want))
+	for d, i in dropped {
+		testing.expectf(
+			t,
+			d.id == want[i].id && d.reason == want[i].reason,
+			"%v, want %v",
+			d,
+			want[i],
+		)
+	}
+	testing.expect_value(t, len(tags.v2.frames), 2)
+	testing.expect_value(t, tags.v2.frames[1].format, odid3.Frame_Format{})
+
+	unknown := read(
+		t,
+		tag_file(2, 0, frame22("XYZ", text("data")), frame22("TT2", text("\x00Title"))),
+	)
+	defer odid3.destroy(&unknown)
+	dropped = convert(t, &unknown.v2, .V2_4)
+	testing.expect_value(t, len(dropped), 1)
+	testing.expect_value(t, dropped[0].id, "XYZ")
+}
+
+@(test)
+v23_tags_to_v22_take_v23_form_first :: proc(t: ^testing.T) {
+	tags := read(
+		t,
+		tag_file(
+			3,
+			0,
+			frame(3, "TIT2", text("\x03Café")),
+			frame(3, "TDRC", text("\x002019-05-03T10:20")),
+			frame(3, "TDOR", text("\x001987")),
+			frame(3, "TIPL", text("\x00producer\x00Ada\x00")),
+			frame(3, "GRP1", text("\x00Group")),
+		),
+	)
+	defer odid3.destroy(&tags)
+	expect_dropped(t, convert(t, &tags.v2, .V2_2), {})
+	ids := [?]string{"TT2", "TYE", "TDA", "TIM", "TOR", "IPL", "GP1"}
+	testing.expect_value(t, len(tags.v2.frames), len(ids))
+	for &f, i in tags.v2.frames {
+		testing.expectf(t, i < len(ids) && f.id == ids[i], "frame %d is %s", i, f.id)
+		testing.expectf(t, f.data[0] <= 1, "%s in encoding %d", f.id, f.data[0])
+	}
+	testing.expect_value(t, tag_field(&tags.v2, .Date), "2019-05-03T10:20")
+	expect_dropped(t, convert(t, &tags.v2, .V2_4), {})
+	testing.expect_value(t, tag_field(&tags.v2, .Title), "Café")
+	testing.expect_value(t, tags.v2.frames[len(tags.v2.frames) - 1].id, "GRP1")
+}
+
+@(test)
+what_v22_cannot_take :: proc(t: ^testing.T) {
+	// A compressed frame whose unsynchronisation flag lied is still compressed bytes.
+	lied := read(
+		t,
+		tag_file(4, 0, frame(4, "TIT2", {0, 0, 0, 5, 0x78, 0x9C, 0xFF, 0xE0}, 0, 0x0B)),
+	)
+	defer odid3.destroy(&lied)
+	expect_dropped(t, convert(t, &lied.v2, .V2_2), {{"TIT2", .Encrypted}})
+
+	webp := frame(3, "APIC", text("\x00image/webp\x00\x03\x00RIFF"))
+	jpeg := frame(3, "APIC", text("\x00image/jpeg\x00\x04\x00\xFF\xD8"))
+	link := frame(3, "APIC", text("\x00-->\x00\x05\x00http://example.com/cover"))
+	pictures := read(t, tag_file(3, 0, webp, jpeg, link))
+	defer odid3.destroy(&pictures)
+	expect_dropped(t, convert(t, &pictures.v2, .V2_2), {{"APIC", .No_Equivalent}})
+	kept := odid3.pictures(&pictures.v2, context.temp_allocator)
+	testing.expect_value(t, len(kept), 2)
+	if len(kept) == 2 {
+		testing.expect_value(t, kept[0].mime, "image/jpeg")
+		testing.expect_value(t, kept[1].mime, "-->")
+	}
+
+	stereo := text("\x03\x10\x00\x01\x00\x02\x00\x03\x00\x04")
+	surround := concat(stereo, text("\x00\x05\x00\x06\x00\x07\x00\x08"))
+	volume := read(t, tag_file(3, 0, frame(3, "RVAD", surround)))
+	defer odid3.destroy(&volume)
+	expect_dropped(t, convert(t, &volume.v2, .V2_2), {{"RVAD", .Partly_Converted}})
+	testing.expect_value(t, string(volume.v2.frames[0].data), string(stereo))
+}
+
+@(test)
+v22_tags_not_read_whole :: proc(t: ^testing.T) {
+	compressed := read(t, tag_file(2, 0x40, frame22("TT2", text("\x00Title"))))
+	defer odid3.destroy(&compressed)
+	_, err := odid3.convert(&compressed.v2, .V2_3, context.temp_allocator)
+	testing.expect_value(t, err, odid3.Error(odid3.Format_Error.Incomplete_Tag))
+
+	for name in ([]string{"v22_pic.mp3", "v23_cover.mp3"}) {
+		skipped, read_err := odid3.read_bytes(
+			fixture(t, name),
+			{skip_picture_data = true},
+			context.allocator,
+		)
+		testing.expect_value(t, read_err, nil)
+		defer odid3.destroy(&skipped)
+		to: odid3.V2_Version = .V2_3 if skipped.v2.version == .V2_2 else .V2_2
+		_, skipped_err := odid3.convert(&skipped.v2, to, context.temp_allocator)
+		testing.expect_value(t, skipped_err, odid3.Error(odid3.Format_Error.Incomplete_Tag))
+	}
+}
+
+@(test)
+v22_conversion_allocation_failures :: proc(t: ^testing.T) {
+	cases := []struct {
+		name: string,
+		to:   odid3.V2_Version,
+	} {
+		{"v22.mp3", .V2_4},
+		{"v22_pic.mp3", .V2_4},
+		{"v24_full.mp3", .V2_2},
+		{"v23_cover.mp3", .V2_2},
+	}
+	for c in cases {
+		succeeded := false
+		for budget in 0 ..< 160 {
+			failing := Failing{context.allocator, 1 << 30}
+			tags, read_err := odid3.read_bytes(fixture(t, c.name), {}, failing_allocator(&failing))
+			testing.expect_value(t, read_err, nil)
+			before := frames_snapshot(&tags.v2)
+			failing.left = budget
+			dropped, err := odid3.convert(&tags.v2, c.to, failing_allocator(&failing))
+			failing.left = 1 << 30
+			if err == nil {
+				odid3.destroy(&dropped, failing_allocator(&failing))
+				succeeded = true
+			} else {
+				testing.expectf(
+					t,
+					frames_snapshot(&tags.v2) == before,
+					"%s at budget %d",
+					c.name,
+					budget,
+				)
+			}
+			odid3.destroy(&tags)
+			if succeeded {
+				break
+			}
+		}
+		testing.expectf(t, succeeded, "%s never converted", c.name)
+	}
 }
