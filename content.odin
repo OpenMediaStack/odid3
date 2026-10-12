@@ -677,7 +677,11 @@ encode_frame :: proc(
 	case Picture:
 		start_text(&data, c.encoding, version) or_return
 		if version == .V2_2 {
-			append(&data, v22_image_format(c.mime)) or_return
+			format := v22_image_format(c.mime)
+			if format == "" {
+				return {}, .Not_In_Version
+			}
+			append(&data, format) or_return
 		} else {
 			encode_string(&data, .Latin1, c.mime, true) or_return
 		}
@@ -727,9 +731,14 @@ encode_frame :: proc(
 	case:
 		return {}, .Bad_Content
 	}
-	allocated := ([^]u8)(raw_data(data))[:cap(data)]
-	frame.data = shrink(allocated, len(data), allocator) or_return
+	// The ID first: once the data shrinks into a new block, nothing else may fail.
 	frame.id = strings.clone(id, allocator) or_return
+	allocated := ([^]u8)(raw_data(data))[:cap(data)]
+	frame.data, err = shrink(allocated, len(data), allocator)
+	if err != nil {
+		delete(frame.id, allocator)
+		return {}, err
+	}
 	frame.allocator = allocator
 	frame.offset = -1
 	frame.data_length = -1
@@ -813,5 +822,5 @@ v22_image_format :: proc(mime: string) -> string {
 	case len(mime) == 3:
 		return mime
 	}
-	return "-->" if mime == "-->" else "\x00\x00\x00"
+	return ""
 }

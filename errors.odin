@@ -30,6 +30,9 @@ Format_Error :: enum u8 {
 	Encoding_Not_In_Version,
 	// Text with a character the chosen encoding cannot hold: Latin-1 holds 256.
 	Not_Encodable,
+	// A value a field cannot hold: a date or a number that does not parse, a NUL, a comment
+	// language that is not 3 letters.
+	Bad_Value,
 	// A write option the version does not have, such as a footer before ID3v2.4.
 	Not_In_Version,
 	// Writing tags read with skip_picture_data: their pictures were not read.

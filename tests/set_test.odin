@@ -1,6 +1,7 @@
 package odid3_tests
 
 import "core:mem"
+import "core:strings"
 import "core:testing"
 
 import odid3 "../"
@@ -280,5 +281,289 @@ setting_fails_cleanly_without_memory :: proc(t: ^testing.T) {
 			return
 		}
 		testing.expect_value(t, set_err, odid3.Error(mem.Allocator_Error.Out_Of_Memory))
+	}
+}
+
+// The frames of a tag as bytes, to tell whether anything changed.
+frames_snapshot :: proc(tag: ^odid3.Tag) -> string {
+	b := strings.builder_make(context.temp_allocator)
+	for f in tag.frames {
+		strings.write_string(&b, f.id)
+		strings.write_byte(&b, u8(transmute(u8)f.status))
+		strings.write_string(&b, string(f.data))
+		strings.write_byte(&b, '|')
+	}
+	return strings.to_string(b)
+}
+
+@(test)
+the_comment_get_reads_is_the_one_set_writes :: proc(t: ^testing.T) {
+	itunes := frame(3, "COMM", text("\x00engiTunNORM\x00 000001"))
+	unknown_language := frame(3, "COMM", text("\x00XXX\x00Old"))
+	tags := read(t, tag_file(3, 0, itunes, unknown_language))
+	defer odid3.destroy(&tags)
+	expect_set(t, &tags.v2, .Comment, "New")
+	all := odid3.comments(&tags.v2, context.temp_allocator)
+	testing.expect_value(t, len(all), 2)
+	testing.expect_value(t, all[1].language, [3]u8{'X', 'X', 'X'})
+	expect_set(t, &tags.v2, .Comment, "")
+	testing.expect_value(t, len(odid3.comments(&tags.v2, context.temp_allocator)), 1)
+
+	described := read(t, tag_file(3, 0, frame(3, "COMM", text("\x00engNote\x00Described"))))
+	defer odid3.destroy(&described)
+	testing.expect_value(t, tag_field(&described.v2, .Comment), "Described")
+	expect_set(t, &described.v2, .Comment, "")
+	expect_set(t, &described.v2, .Comment, "Plain")
+	plain := odid3.comments(&described.v2, context.temp_allocator)
+	testing.expect(t, len(plain) == 1 && plain[0].description == "")
+}
+
+@(test)
+rewritten_frames_keep_their_encoding :: proc(t: ^testing.T) {
+	utf16_comm := frame(
+		3,
+		"COMM",
+		concat(text("\x01eng\xFF\xFE\x00\x00\xFF\xFE"), text("O\x00l\x00d\x00")),
+	)
+	utf16_txxx := frame(4, "TXXX", text("\x01\xFF\xFEm\x00\x00\x00\xFF\xFEC\x00"))
+	v23 := read(t, tag_file(3, 0, utf16_comm))
+	defer odid3.destroy(&v23)
+	expect_set(t, &v23.v2, .Comment, "New")
+	testing.expect_value(t, v23.v2.frames[0].data[0], 1)
+	v24 := read(t, tag_file(4, 0, utf16_txxx))
+	defer odid3.destroy(&v24)
+	testing.expect_value(t, odid3.set_user_text(&v24.v2, "m", "Calm"), nil)
+	testing.expect_value(t, v24.v2.frames[0].data[0], 1)
+	value, found, _ := odid3.user_text(&v24.v2, "M", context.temp_allocator)
+	testing.expect(t, found && value == "Calm")
+}
+
+@(test)
+values_set_cannot_hold :: proc(t: ^testing.T) {
+	for major in ([]u8{2, 3, 4}) {
+		tags := read(t, tag_file(major, 0))
+		defer odid3.destroy(&tags)
+		bad := []string {
+			"abc",
+			"19",
+			"2019-13-45",
+			"May 2019",
+			"2019-05-03 10:20",
+			"2019-02-30T25:00",
+		}
+		for value in bad {
+			testing.expectf(
+				t,
+				odid3.set(&tags.v2, .Date, value) == odid3.Error(odid3.Format_Error.Bad_Value),
+				"%q",
+				value,
+			)
+		}
+		precise := []string{"2019-05", "2019-05-03T10", "2019-05-03T10:20:30"}
+		for value in precise {
+			err := odid3.set(&tags.v2, .Date, value)
+			want: odid3.Error = nil if major == 4 else odid3.Format_Error.Not_In_Version
+			testing.expectf(t, err == want, "ID3v2.%d %q: %v", major, value, err)
+		}
+		testing.expect_value(t, odid3.set(&tags.v2, .Date, "2019-05-03T10:20"), nil)
+		testing.expect_value(t, tag_field(&tags.v2, .Date), "2019-05-03T10:20")
+
+		testing.expect_value(
+			t,
+			odid3.set(&tags.v2, .Track, "5/10"),
+			odid3.Error(odid3.Format_Error.Bad_Value),
+		)
+		testing.expect_value(
+			t,
+			odid3.set(&tags.v2, .Title, "a\x00b"),
+			odid3.Error(odid3.Format_Error.Bad_Value),
+		)
+		testing.expect_value(
+			t,
+			odid3.set_track(&tags.v2, 1_000_000_000, 0),
+			odid3.Error(odid3.Format_Error.Bad_Value),
+		)
+		testing.expect_value(
+			t,
+			odid3.set_track(&tags.v2, -1, 5),
+			odid3.Error(odid3.Format_Error.Bad_Value),
+		)
+		testing.expect_value(
+			t,
+			odid3.set_comment(&tags.v2, "x", "", "english"),
+			odid3.Error(odid3.Format_Error.Bad_Value),
+		)
+		testing.expect_value(
+			t,
+			odid3.set_comment(&tags.v2, "x", "", ""),
+			odid3.Error(odid3.Format_Error.Bad_Value),
+		)
+	}
+	v22 := read(t, tag_file(2, 0))
+	defer odid3.destroy(&v22)
+	webp := odid3.Picture {
+		mime = "image/webp",
+		type = .Front_Cover,
+		data = text("RIFF"),
+	}
+	testing.expect_value(
+		t,
+		odid3.set_picture(&v22.v2, webp),
+		odid3.Error(odid3.Format_Error.Not_In_Version),
+	)
+}
+
+@(test)
+setting_what_get_gives_changes_nothing :: proc(t: ^testing.T) {
+	several := tag_file(
+		4,
+		0,
+		frame(4, "TPE1", text("\x03Ada\x00Bea")),
+		frame(4, "COMM", text("\x03XXX\x00Note")),
+	)
+	for data in ([][]u8{fixture(t, "v24_full.mp3"), fixture(t, "v23_full.mp3"), fixture(t, "v22.mp3"), several}) {
+		tags := read(t, data)
+		defer odid3.destroy(&tags)
+		before := frames_snapshot(&tags.v2)
+		for f in odid3.Field {
+			testing.expect_value(t, odid3.set(&tags.v2, f, tag_field(&tags.v2, f)), nil)
+		}
+		testing.expect_value(t, frames_snapshot(&tags.v2), before)
+	}
+}
+
+@(test)
+a_failed_set_leaves_the_tag_as_it_was :: proc(t: ^testing.T) {
+	Edit :: struct {
+		fixture: string,
+		apply:   proc(tag: ^odid3.Tag) -> odid3.Error,
+	}
+	edits := []Edit {
+		{
+			"v24_full.mp3",
+			proc(tag: ^odid3.Tag) -> odid3.Error {return odid3.set(
+					tag,
+					.Title,
+					"Une autre valeur",
+				)},
+		},
+		{
+			"v23_full.mp3",
+			proc(tag: ^odid3.Tag) -> odid3.Error {return odid3.set(
+					tag,
+					.Date,
+					"2021-06-15T08:30",
+				)},
+		},
+		{
+			"v23_full.mp3",
+			proc(tag: ^odid3.Tag) -> odid3.Error {return odid3.set(tag, .Comment, "Rewritten")},
+		},
+		{
+			"v23_full.mp3",
+			proc(tag: ^odid3.Tag) -> odid3.Error {return odid3.set(tag, .Comment, "")},
+		},
+		{
+			"v24_full.mp3",
+			proc(tag: ^odid3.Tag) -> odid3.Error {return odid3.set_user_text(
+					tag,
+					"MOOD",
+					"Bright",
+				)},
+		},
+		{
+			"v24_full.mp3",
+			proc(tag: ^odid3.Tag) -> odid3.Error {return odid3.set_genres(tag, {"Rock", "Folk"})},
+		},
+		{"v23_cover.mp3", proc(tag: ^odid3.Tag) -> odid3.Error {
+				cover := odid3.Picture {
+					mime = "image/png",
+					type = .Front_Cover,
+					data = text("\x89PNG new"),
+				}
+				return odid3.set_picture(tag, cover)
+			}},
+	}
+	for edit, e in edits {
+		succeeded := false
+		for budget in 0 ..< 64 {
+			failing := Failing{context.allocator, 1 << 30}
+			tags, read_err := odid3.read_bytes(
+				fixture(t, edit.fixture),
+				{},
+				failing_allocator(&failing),
+			)
+			testing.expect_value(t, read_err, nil)
+			before := frames_snapshot(&tags.v2)
+			failing.left = budget
+			err := edit.apply(&tags.v2)
+			failing.left = 1 << 30
+			if err == nil {
+				succeeded = true
+			} else {
+				testing.expectf(
+					t,
+					frames_snapshot(&tags.v2) == before,
+					"edit %d changed the tag at budget %d",
+					e,
+					budget,
+				)
+			}
+			odid3.destroy(&tags)
+			if succeeded {
+				break
+			}
+		}
+		testing.expectf(t, succeeded, "edit %d never succeeded", e)
+	}
+}
+
+@(test)
+pictures_are_replaced_in_place :: proc(t: ^testing.T) {
+	tags := read(t, fixture(t, "v23_cover.mp3"))
+	defer odid3.destroy(&tags)
+	index := -1
+	for f, i in tags.v2.frames {
+		if f.id == "APIC" {
+			index = i
+		}
+	}
+	cover := odid3.Picture {
+		mime = "image/png",
+		type = .Front_Cover,
+		data = text("\x89PNG new"),
+	}
+	testing.expect_value(t, odid3.set_picture(&tags.v2, cover), nil)
+	testing.expect_value(t, tags.v2.frames[index].id, "APIC")
+	front, found, _ := odid3.front_cover(&tags.v2, context.temp_allocator)
+	testing.expect(t, found && string(front.data) == "\x89PNG new")
+	testing.expect_value(t, len(odid3.pictures(&tags.v2, context.temp_allocator)), 1)
+}
+
+@(test)
+encode_frame_allocation_failures :: proc(t: ^testing.T) {
+	contents := []odid3.Frame_Content {
+		odid3.Text{.UTF16, {"Paper", "Satellites"}},
+		odid3.Comment {
+			.Latin1,
+			{'e', 'n', 'g'},
+			"Note",
+			"A comment long enough to move when shrunk",
+		},
+		odid3.Picture{.UTF8, "image/png", .Front_Cover, "Cover", text("\x89PNG and more bytes")},
+	}
+	for content in contents {
+		succeeded := false
+		for budget in 0 ..< 32 {
+			failing := Failing{context.allocator, budget}
+			allocator := failing_allocator(&failing)
+			frame, err := odid3.encode_frame(content, "TIT2", .V2_4, allocator)
+			if err == nil {
+				odid3.destroy(&frame)
+				succeeded = true
+				break
+			}
+		}
+		testing.expect(t, succeeded)
 	}
 }
