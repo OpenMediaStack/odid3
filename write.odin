@@ -113,7 +113,7 @@ write_file :: proc(
 		if temp_open {
 			os.close(temp)
 		}
-		os.remove(temp_path)
+		remove_file(temp_path)
 	}
 	// Before any byte of the original goes in, so that a private file never shows to others.
 	os.fchange_mode(temp, mode) or_return
@@ -221,7 +221,8 @@ check_unchanged :: proc(
 	if now.size != before.size || now.modification_time != before.modification_time {
 		return .File_Changed
 	}
-	if at_path.inode != now.inode || at_path.device != now.device {
+	// Windows only gives a file's identity through an open handle, so a stat by path has none.
+	if at_path.inode != 0 && (at_path.inode != now.inode || at_path.device != now.device) {
 		return .File_Changed
 	}
 	return nil

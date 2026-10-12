@@ -17,6 +17,11 @@ keep_owner :: proc(original, temp: ^os.File) {
 	}
 }
 
+@(private)
+remove_file :: proc(path: string) {
+	os.remove(path)
+}
+
 // A rename is only durable once the directory that holds it reaches the disk.
 @(private)
 sync_directory :: proc(dir: string) {
