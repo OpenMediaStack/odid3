@@ -1,10 +1,12 @@
 package odid3
 
 import "base:runtime"
+import "core:os"
 
 // What can stop a procedure of this package. A damaged tag is not an error: reading returns what
 // it could read, with Warnings.
 Error :: union #shared_nil {
+	os.Error, // opening or reading a file
 	runtime.Allocator_Error,
 }
 

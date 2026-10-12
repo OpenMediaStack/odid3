@@ -26,6 +26,7 @@ Needs Odin `dev-2026-10`. The checks the CI runs:
 ```bash
 odin check . -no-entry-point -vet -strict-style
 odin test tests -vet -strict-style -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
+odin test . -vet -strict-style -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
 odinfmt -path:. -w
 ```
 

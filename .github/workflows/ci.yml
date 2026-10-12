@@ -48,6 +48,8 @@ jobs:
         run: odin check . -no-entry-point -vet -strict-style
       - name: Test
         run: odin test tests -vet -strict-style -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
+      - name: Internal tests
+        run: odin test . -vet -strict-style -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
       - name: Documentation
         run: odin doc .
 
