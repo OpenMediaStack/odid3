@@ -188,3 +188,39 @@ deflate_frees_everything_when_memory_runs_out :: proc(t: ^testing.T) {
 	}
 	testing.fail_now(t, "deflate_zlib never succeeded")
 }
+
+// Inflaters accept a length of 258 written as code 284 with its extra bits; zlib writes code 285.
+@(test)
+deflate_writes_what_zlib_writes :: proc(t: ^testing.T) {
+	cases := []struct {
+		data: []u8,
+		want: []u8,
+	} {
+		{{}, {0x78, 0x9C, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01}},
+		{
+			transmute([]u8)strings.repeat("a", 259, context.temp_allocator),
+			{0x78, 0x9C, 0x4B, 0x1C, 0x05, 0x00, 0xD9, 0xA8, 0x62, 0x24},
+		},
+	}
+	for c in cases {
+		stream := expect_round_trip(t, c.data)
+		testing.expectf(t, bytes.equal(stream, c.want), "%d bytes gave %x", len(c.data), stream)
+		delete(stream)
+	}
+}
+
+// Distinct bytes from 144 on take 9 bits each: 30 of them still fit a fixed block, 31 are stored.
+@(test)
+deflate_switches_to_stored_blocks_at_the_threshold :: proc(t: ^testing.T) {
+	spread := make([]u8, 31, context.temp_allocator)
+	for &b, i in spread {
+		b = u8(144 + i * 3)
+	}
+	fixed := expect_round_trip(t, spread[:30])
+	defer delete(fixed)
+	testing.expect_value(t, fixed[2] & 7, 3)
+	stored := expect_round_trip(t, spread)
+	defer delete(stored)
+	testing.expect_value(t, stored[2] & 7, 1)
+	testing.expect_value(t, len(stored), 2 + 5 + 31 + 4)
+}

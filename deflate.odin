@@ -17,13 +17,17 @@ DEFLATE_MIN_MATCH :: 3
 DEFLATE_MAX_MATCH :: 258
 @(private)
 DEFLATE_HASH_BITS :: 15
-// How many earlier positions with the same hash a match is looked for at, at most.
+// How many earlier positions with the same hash a match is looked for at, at most, and the match
+// length that is good enough to stop looking: zlib's choice at its default level.
 @(private)
 DEFLATE_MAX_CHAIN :: 128
 @(private)
+DEFLATE_NICE_MATCH :: 128
+@(private)
 DEFLATE_MAX_STORED :: 65535
 // The fixed code spends at most 31 bits on one symbol: a length and a distance with their extra
-// bits.
+// bits. The buffer holds the stored form and twice that: the fixed block stops once it reaches the
+// stored size, after which one more symbol, the end of the block and the flush still go in.
 @(private)
 DEFLATE_MAX_SYMBOL_BYTES :: 4
 
@@ -35,7 +39,9 @@ Bit_Writer :: struct {
 	count: uint,
 }
 
-// Compresses data into a zlib stream, allocated with allocator and owned by the caller.
+// Compresses data into a zlib stream, allocated with allocator and owned by the caller, who frees
+// it with delete. The stream is at most 6 bytes plus 5 for each started block of 65,535 bytes
+// longer than data (at least one block): the size of data stored as it is.
 @(private)
 deflate_zlib :: proc(data: []u8, allocator: runtime.Allocator) -> (stream: []u8, err: Error) {
 	stored_blocks := max(1, (len(data) + DEFLATE_MAX_STORED - 1) / DEFLATE_MAX_STORED)
@@ -59,7 +65,7 @@ deflate_zlib :: proc(data: []u8, allocator: runtime.Allocator) -> (stream: []u8,
 	return shrink(w.out, w.n, allocator)
 }
 
-// Writes data as one fixed Huffman block, unless the stream would reach most bytes.
+// Writes data as one fixed Huffman block, unless the stream would grow past most bytes.
 @(private = "file")
 deflate_fixed :: proc(
 	w: ^Bit_Writer,
@@ -72,7 +78,8 @@ deflate_fixed :: proc(
 ) {
 	head := make([]i32, 1 << DEFLATE_HASH_BITS, allocator) or_return
 	defer delete(head, allocator)
-	prev := make([]i32, DEFLATE_WINDOW, allocator) or_return
+	// Positions are kept modulo the window, so shorter data needs no more room than its length.
+	prev := make([]i32, min(len(data), DEFLATE_WINDOW), allocator) or_return
 	defer delete(prev, allocator)
 	for &h in head {
 		h = -1
@@ -128,7 +135,7 @@ longest_match :: proc(head, prev: []i32, data: []u8, at: int) -> (length, distan
 		}
 		if n > length {
 			length, distance = n, at - candidate
-			if n == most {
+			if n >= min(most, DEFLATE_NICE_MATCH) {
 				break
 			}
 		}
@@ -137,6 +144,8 @@ longest_match :: proc(head, prev: []i32, data: []u8, at: int) -> (length, distan
 	return
 }
 
+// Knuth's multiplicative hash: 2^32 divided by the golden ratio spreads the 3 bytes over the
+// table's high bits.
 @(private = "file")
 deflate_hash :: proc(b: []u8) -> int {
 	key := u32(b[0]) << 16 | u32(b[1]) << 8 | u32(b[2])
