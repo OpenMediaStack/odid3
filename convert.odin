@@ -1,6 +1,7 @@
 package odid3
 
 import "base:runtime"
+import "core:slice"
 import "core:strings"
 
 // A frame a conversion removed, and why.
@@ -14,7 +15,8 @@ Dropped_Frames :: [dynamic]Dropped_Frame
 
 // Why a conversion removed a frame.
 Drop_Reason :: enum u8 {
-	// The target version has no frame with this layout (RVA2 in ID3v2.3, RVAD in ID3v2.4...).
+	// The target version has no frame with this layout (RVA2 in ID3v2.3, RVAD in ID3v2.4...), or
+	// the value has no place there (a second date, a day without its year, a date that is none).
 	No_Equivalent,
 	// Encrypted, or compressed in a way that cannot be carried without its key or sizes.
 	Encrypted,
@@ -24,6 +26,9 @@ Drop_Reason :: enum u8 {
 	Not_Encodable,
 	// The tag was converted to .None.
 	Tag_Removed,
+	// Converted, but part of its value has no place in the target version: a date's seconds or a
+	// month without its day in ID3v2.3, values after the first.
+	Partly_Converted,
 }
 
 // A deep copy, to preview a conversion or an edit without touching the original. The copy belongs
@@ -74,10 +79,12 @@ clone_frame :: proc(f: ^Frame, allocator: runtime.Allocator) -> (duplicate: Fram
 	return
 }
 
-// Converts a tag in place to another version: renames and merges frames (TYER, TDAT and TIME into
-// TDRC, TORY into TDOR, IPLS into TIPL, and back), re-encodes text the target cannot hold, and
-// removes the frames it cannot carry, which it returns. From .None it only sets the version; to
-// .None it removes every frame. Free the result with destroy.
+// Converts a tag to another version: renames and merges frames (TYER, TDAT and TIME into TDRC,
+// TORY into TDOR, IPLS into TIPL, and back), converts the frames inside chapters, re-encodes text
+// the target cannot hold, joins several values with "/" for ID3v2.3, and removes the frames it
+// cannot carry. It returns, in their order, the frames it removed and those whose value it could
+// only carry in part, each with the reason. From .None it only sets the version; to .None it
+// removes every frame. On an error the tag is left as it was. Free the result with destroy.
 convert :: proc(
 	tag: ^Tag,
 	to: V2_Version,
@@ -87,64 +94,348 @@ convert :: proc(
 	err: Error,
 ) {
 	adopt_context_allocator(tag)
-	dropped = make(Dropped_Frames, allocator)
-	defer if err != nil {
-		destroy_dropped(&dropped, allocator)
-	}
 	from := tag.version
 	switch {
+	case from == .V2_2 || to == .V2_2:
+		return nil, .Not_In_Version
 	case from == to:
-		return
+		return nil, nil
 	case from == .None:
 		tag.version = to
-		return
-	case to == .None:
+		return nil, nil
+	}
+	work := clone_tag(tag, tag.allocator) or_return
+	list := make(Dropped_Frames, allocator)
+	if err = convert_frames(&work, to, &list, allocator); err != nil {
+		destroy_tag(&work)
+		destroy_dropped(&list, allocator)
+		return nil, err
+	}
+	destroy_tag(tag)
+	tag^ = work
+	return list, nil
+}
+
+// Converts the frames of a tag in place; on an error the tag is left half converted, which is why
+// convert works on a copy.
+@(private)
+convert_frames :: proc(
+	tag: ^Tag,
+	to: V2_Version,
+	dropped: ^Dropped_Frames,
+	allocator: runtime.Allocator,
+) -> Error {
+	if to == .None {
 		for len(tag.frames) > 0 {
-			drop(tag, len(tag.frames) - 1, .Tag_Removed, &dropped, allocator) or_return
+			drop(tag, 0, .Tag_Removed, dropped, allocator) or_return
 		}
-		tag.version = .None
-		tag.flags = {}
-		return
+		tag.version, tag.flags = .None, {}
+		return nil
 	}
-	date := tag_date(tag, tag.allocator) or_return
-	defer delete(date, tag.allocator)
-	original_year := first_text(tag, {"TORY", "TDOR", "TOR"}, tag.allocator) or_return
-	defer delete(original_year, tag.allocator)
-	people := involved_people(tag, tag.allocator) or_return
-	defer destroy_strings(&people, tag.allocator)
-
-	for i := len(tag.frames) - 1; i >= 0; i -= 1 {
-		f := &tag.frames[i]
-		reason, drop_it := conversion_drop(f, from, to)
-		if drop_it {
-			drop(tag, i, reason, &dropped, allocator) or_return
-		}
-	}
-	remove_frames(tag, DATE_IDS[:])
-	remove_frames(tag, ORIGINAL_YEAR_IDS)
-	remove_frames(tag, PEOPLE_IDS)
-	tag.version = to
-	tag.flags = {}
-
-	for i := len(tag.frames) - 1; i >= 0; i -= 1 {
-		if !(reencode_if_needed(tag, i) or_return) {
-			drop(tag, i, .Not_Encodable, &dropped, allocator) or_return
-		}
-	}
-	if date != "" {
-		set_date(tag, date) or_return
-	}
-	if original_year != "" {
-		if to == .V2_4 {
-			set_text(tag, {"TDOR"}, original_year) or_return
+	from := tag.version
+	for i := 0; i < len(tag.frames); {
+		if reason, drop_it := conversion_drop(&tag.frames[i], from, to); drop_it {
+			drop(tag, i, reason, dropped, allocator) or_return
 		} else {
-			set_text(tag, {"TORY"}, original_year[:min(4, len(original_year))]) or_return
+			i += 1
 		}
 	}
-	if len(people) > 0 {
-		set_people(tag, people) or_return
+	for i in 0 ..< len(tag.frames) {
+		if tag.frames[i].id == "CHAP" || tag.frames[i].id == "CTOC" {
+			convert_chapter(tag, i, to, dropped, allocator) or_return
+		}
 	}
-	return
+	tag.version, tag.flags = to, {}
+	convert_date(tag, from, dropped, allocator) or_return
+	convert_original_year(tag, dropped, allocator) or_return
+	convert_people(tag, dropped, allocator) or_return
+	for i := 0; i < len(tag.frames); {
+		if convert_text(tag, i) or_return {
+			i += 1
+		} else {
+			drop(tag, i, .Not_Encodable, dropped, allocator) or_return
+		}
+	}
+	if to == .V2_4 {
+		// ID3v2.4 gives the size before compression in the data length indicator.
+		for &f in tag.frames {
+			if .Compression in f.format && f.data_length >= 0 {
+				f.format += {.Data_Length_Indicator}
+			}
+		}
+	}
+	return nil
+}
+
+// The frames inside a CHAP or CTOC are laid out in their tag's version: they are converted with
+// it, and the chapter encoded again.
+@(private)
+convert_chapter :: proc(
+	tag: ^Tag,
+	index: int,
+	to: V2_Version,
+	dropped: ^Dropped_Frames,
+	allocator: runtime.Allocator,
+) -> Error {
+	f := &tag.frames[index]
+	content := decode_owned(f, tag.version, tag.allocator) or_return
+	defer destroy_content(&content, tag.allocator)
+	inner := Tag {
+		version   = tag.version,
+		allocator = tag.allocator,
+	}
+	switch &c in content {
+	case Chapter:
+		inner.frames = c.frames
+		defer c.frames = inner.frames
+		convert_frames(&inner, to, dropped, allocator) or_return
+	case Table_Of_Contents:
+		inner.frames = c.frames
+		defer c.frames = inner.frames
+		convert_frames(&inner, to, dropped, allocator) or_return
+	case Text, User_Text, Url, User_Url, Comment, Picture, Unique_File_Id, Popularimeter:
+		return nil
+	case Play_Counter, Private, Binary:
+		return nil
+	}
+	replacement := encode_frame(content, f.id, to, tag.allocator) or_return
+	replacement.status = f.status
+	replacement.format = f.format & {.Grouping}
+	replacement.group = f.group
+	destroy_frame(f)
+	f^ = replacement
+	return nil
+}
+
+@(private)
+drop_reason_of :: proc(f: ^Frame) -> Drop_Reason {
+	if f.problem == .Encrypted || f.problem == .Bad_Compression {
+		return .Encrypted
+	}
+	return .Not_Encodable
+}
+
+// The first value of a text frame, cloned with the tag's allocator; ok is false when the frame
+// does not decode as text. Read as ID3v2.4 reads it, several tells whether text follows a
+// terminator, which the conversion cannot carry.
+@(private)
+first_value :: proc(tag: ^Tag, f: ^Frame) -> (value: string, several, ok: bool, err: Error) {
+	content := decode_owned(f, .V2_4, tag.allocator) or_return
+	defer destroy_content(&content, tag.allocator)
+	text, is_text := content.(Text)
+	if !is_text || len(text.values) == 0 {
+		return "", false, false, nil
+	}
+	value = strings.clone(text.values[0], tag.allocator) or_return
+	return value, len(text.values) > 1, true, nil
+}
+
+// Puts frames where the frame at index was, in its place; the tag takes them.
+@(private)
+replace_frame :: proc(tag: ^Tag, index: int, frames: []Frame) -> Error {
+	return edit_frames(tag, {index}, frames)
+}
+
+// The date frames: the first TDRC becomes TYER, TDAT and TIME, or the first TYER with the first
+// TDAT and TIME becomes TDRC. A date frame whose value goes nowhere (a second one, a TDAT without
+// its year, a value that is no date) is listed, and one carried in part too. The tag already has
+// its new version; from is the one its frames were read in.
+@(private)
+convert_date :: proc(
+	tag: ^Tag,
+	from: V2_Version,
+	dropped: ^Dropped_Frames,
+	allocator: runtime.Allocator,
+) -> Error {
+	first := [4]int{-1, -1, -1, -1} // TDRC, TYER, TDAT, TIME
+	ids := [4]string{"TDRC", "TYER", "TDAT", "TIME"}
+	for i := 0; i < len(tag.frames); {
+		k := -1
+		for id, j in ids {
+			if tag.frames[i].id == id {
+				k = j
+			}
+		}
+		switch {
+		case k < 0:
+			i += 1
+		case tag.frames[i].problem != .None && tag.frames[i].problem != .Bad_Data_Length:
+			drop(tag, i, drop_reason_of(&tag.frames[i]), dropped, allocator) or_return
+		case first[k] >= 0:
+			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
+		case:
+			first[k] = i
+			i += 1
+		}
+	}
+	if tag.version == .V2_4 {
+		return date_to_v24(tag, first, dropped, allocator)
+	}
+	return date_to_v23(tag, first, dropped, allocator)
+}
+
+
+// The format of a text frame to keep for the frame that replaces it.
+@(private)
+format_of :: proc(f: ^Frame) -> Maybe(Text_Format) {
+	if encoding, ok := frame_encoding(f); ok {
+		return Text_Format{encoding, f.status}
+	}
+	return nil
+}
+
+// Lists a frame whose value a conversion carried only in part.
+@(private)
+note :: proc(
+	dropped: ^Dropped_Frames,
+	id: string,
+	reason: Drop_Reason,
+	allocator: runtime.Allocator,
+) -> Error {
+	cloned := strings.clone(id, allocator) or_return
+	if _, err := append(dropped, Dropped_Frame{cloned, reason}); err != nil {
+		delete(cloned, allocator)
+		return err
+	}
+	return nil
+}
+
+// TORY holds a year, TDOR a timestamp: TORY goes to TDOR as it is, TDOR to TORY as its year.
+@(private)
+convert_original_year :: proc(
+	tag: ^Tag,
+	dropped: ^Dropped_Frames,
+	allocator: runtime.Allocator,
+) -> Error {
+	source := "TORY" if tag.version == .V2_4 else "TDOR"
+	target := "TDOR" if tag.version == .V2_4 else "TORY"
+	at := -1
+	for i := 0; i < len(tag.frames); {
+		f := &tag.frames[i]
+		switch {
+		case f.id != source:
+			i += 1
+		case f.problem != .None && f.problem != .Bad_Data_Length:
+			drop(tag, i, drop_reason_of(f), dropped, allocator) or_return
+		case at >= 0:
+			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
+		case:
+			at = i
+			i += 1
+		}
+	}
+	if at < 0 {
+		return nil
+	}
+	value, several, ok := first_value(tag, &tag.frames[at]) or_return
+	defer delete(value, tag.allocator)
+	carried := value
+	if tag.version != .V2_4 {
+		if !ok || len(value) < 4 || !is_number(value[:4]) {
+			return drop(tag, at, .No_Equivalent, dropped, allocator)
+		}
+		carried = value[:4]
+	}
+	if !ok {
+		return drop(tag, at, .Not_Encodable, dropped, allocator)
+	}
+	frame := text_frame(tag, target, {carried}, format_of(&tag.frames[at])) or_return
+	replace_frame(tag, at, {frame}) or_return
+	if several || len(carried) < len(value) {
+		note(dropped, source, .Partly_Converted, allocator) or_return
+	}
+	return nil
+}
+
+// ID3v2.3's IPLS and ID3v2.4's TIPL and TMCL hold pairs of a role and a name: TIPL and TMCL merge
+// into IPLS, IPLS goes to TIPL.
+@(private)
+convert_people :: proc(
+	tag: ^Tag,
+	dropped: ^Dropped_Frames,
+	allocator: runtime.Allocator,
+) -> Error {
+	sources := []string{"IPLS"} if tag.version == .V2_4 else []string{"TIPL", "TMCL", "IPLS"}
+	people := make([dynamic]string, tag.allocator)
+	defer {
+		for p in people {
+			delete(p, tag.allocator)
+		}
+		delete(people)
+	}
+	at := -1
+	previous: Maybe(Text_Format)
+	for i := 0; i < len(tag.frames); {
+		f := &tag.frames[i]
+		if !contains(sources, f.id) {
+			i += 1
+			continue
+		}
+		ok := people_of_frame(f, &people, tag.allocator) or_return
+		switch {
+		case !ok:
+			drop(tag, i, drop_reason_of(f), dropped, allocator) or_return
+		case at < 0:
+			at = i
+			previous = format_of(f)
+			i += 1
+		case:
+			remove_frame(tag, i)
+		}
+	}
+	if at < 0 {
+		return nil
+	}
+	if len(people) == 0 {
+		remove_frame(tag, at)
+		return nil
+	}
+	format := keep_format(previous, tag.version, ..people[:])
+	data := make([dynamic]u8, tag.allocator)
+	defer delete(data)
+	append(&data, u8(format.encoding)) or_return
+	for value in people {
+		encode_string(&data, format.encoding, value, true) or_return
+	}
+	frame := make_frame(
+		"TIPL" if tag.version == .V2_4 else "IPLS",
+		data[:],
+		tag.allocator,
+	) or_return
+	frame.status = format.status
+	return replace_frame(tag, at, {frame})
+}
+
+// Appends the strings of a people frame, padded to whole pairs; ok is false when it does not
+// decode.
+@(private)
+people_of_frame :: proc(
+	f: ^Frame,
+	people: ^[dynamic]string,
+	allocator: runtime.Allocator,
+) -> (
+	ok: bool,
+	err: Error,
+) {
+	encoding, known := frame_encoding(f)
+	if !known {
+		return false, nil
+	}
+	count := 0
+	for rest := f.data[1:]; len(rest) > 0; {
+		text: []u8
+		text, rest, _ = split_terminated(encoding, rest)
+		value := decode_text(encoding, text, allocator) or_return
+		if _, append_err := append(people, value); append_err != nil {
+			delete(value, allocator)
+			return false, append_err
+		}
+		count += 1
+	}
+	if count % 2 == 1 {
+		append(people, "") or_return
+	}
+	return true, nil
 }
 
 // Frees the IDs of dropped frames and the list.
@@ -293,6 +584,11 @@ conversion_drop :: proc(f: ^Frame, from, to: V2_Version) -> (reason: Drop_Reason
 	if as_stored && .Compression in f.format && f.data_length < 0 {
 		return .Encrypted, true
 	}
+	// The frames inside a chapter are laid out in the source version: one that cannot be decoded
+	// cannot be converted.
+	if (f.id == "CHAP" || f.id == "CTOC") && f.problem != .None && f.problem != .Bad_Data_Length {
+		return .Encrypted if as_stored else .No_Equivalent, true
+	}
 	return {}, false
 }
 
@@ -313,19 +609,174 @@ drop :: proc(
 	return nil
 }
 
+
 @(private)
-remove_frames :: proc(tag: ^Tag, ids: []string) {
-	for i := len(tag.frames) - 1; i >= 0; i -= 1 {
-		if contains(ids, tag.frames[i].id) {
-			remove_frame(tag, i)
+fits_all_latin1 :: proc(values: ..string) -> bool {
+	for value in values {
+		if !fits_latin1(value, max(int)) {
+			return false
 		}
 	}
+	return true
 }
 
-// Re-encodes a frame whose text is in an encoding the tag's version does not have. ok is false when
-// the frame needs it but its content cannot be decoded and encoded again.
+
+// ID3v2.3 parts of a date that go nowhere, listed and removed, with the frame that replaces them
+// put in the place of the first.
 @(private)
-reencode_if_needed :: proc(tag: ^Tag, index: int) -> (ok: bool, err: Error) {
+replace_date_parts :: proc(tag: ^Tag, remove: ^[dynamic]int, frames: []Frame) -> Error {
+	slice.sort(remove[:])
+	return edit_frames(tag, remove[:], frames)
+}
+
+@(private)
+date_to_v24 :: proc(
+	tag: ^Tag,
+	first: [4]int,
+	dropped: ^Dropped_Frames,
+	allocator: runtime.Allocator,
+) -> Error {
+	ids := [4]string{"TDRC", "TYER", "TDAT", "TIME"}
+	remove := make([dynamic]int, tag.allocator)
+	defer delete(remove)
+	year, day_month, hours: string
+	defer delete(year, tag.allocator)
+	defer delete(day_month, tag.allocator)
+	defer delete(hours, tag.allocator)
+	several, year_ok, day_ok, time_ok: bool
+	// A TDRC already there wins over the ID3v2.3 parts.
+	if first[0] < 0 {
+		if first[1] >= 0 {
+			year, several, year_ok = first_value(tag, &tag.frames[first[1]]) or_return
+		}
+		if first[2] >= 0 {
+			day_month, _, day_ok = first_value(tag, &tag.frames[first[2]]) or_return
+		}
+		if first[3] >= 0 {
+			hours, _, time_ok = first_value(tag, &tag.frames[first[3]]) or_return
+		}
+	}
+	full_year := year_ok && len(year) == 4 && is_number(year)
+	day_ok = day_ok && full_year && is_pair_within(day_month, 31, 12, 1)
+	time_ok = time_ok && day_ok && is_pair_within(hours, 23, 59, 0)
+	used := [4]bool{false, year_ok, day_ok, time_ok}
+	for k in 1 ..= 3 {
+		if first[k] < 0 {
+			continue
+		}
+		append(&remove, first[k]) or_return
+		if !used[k] {
+			note(dropped, ids[k], .No_Equivalent, allocator) or_return
+		}
+	}
+	if !year_ok {
+		return replace_date_parts(tag, &remove, nil)
+	}
+	buf: [16]u8
+	date := strings.builder_from_bytes(buf[:])
+	strings.write_string(&date, year if full_year else "")
+	if day_ok {
+		fmt_parts := [?]string{"-", day_month[2:4], "-", day_month[0:2]}
+		for part in fmt_parts {
+			strings.write_string(&date, part)
+		}
+	}
+	if time_ok {
+		fmt_parts := [?]string{"T", hours[0:2], ":", hours[2:4]}
+		for part in fmt_parts {
+			strings.write_string(&date, part)
+		}
+	}
+	value := strings.to_string(date) if full_year else year
+	if several {
+		note(dropped, "TYER", .Partly_Converted, allocator) or_return
+	}
+	frame := text_frame(tag, "TDRC", {value}, format_of(&tag.frames[first[1]])) or_return
+	return replace_date_parts(tag, &remove, {frame})
+}
+
+@(private)
+date_to_v23 :: proc(
+	tag: ^Tag,
+	first: [4]int,
+	dropped: ^Dropped_Frames,
+	allocator: runtime.Allocator,
+) -> Error {
+	if first[0] < 0 {
+		return nil
+	}
+	ids := [4]string{"TDRC", "TYER", "TDAT", "TIME"}
+	remove := make([dynamic]int, tag.allocator)
+	defer delete(remove)
+	append(&remove, first[0]) or_return
+	// A TDRC wins over ID3v2.3 parts that were already there.
+	for k in 1 ..= 3 {
+		if first[k] >= 0 {
+			append(&remove, first[k]) or_return
+			note(dropped, ids[k], .No_Equivalent, allocator) or_return
+		}
+	}
+	value, several, ok := first_value(tag, &tag.frames[first[0]]) or_return
+	defer delete(value, tag.allocator)
+	if !ok || len(value) < 4 || !is_number(value[:4]) {
+		note(dropped, "TDRC", .No_Equivalent, allocator) or_return
+		return replace_date_parts(tag, &remove, nil)
+	}
+	digits :: proc(s: string, at: int) -> bool {
+		return at + 2 <= len(s) && is_number(s[at:at + 2])
+	}
+	month := len(value) >= 7 && value[4] == '-' && digits(value, 5)
+	day := month && len(value) >= 10 && value[7] == '-' && digits(value, 8)
+	hour := day && len(value) >= 13 && (value[10] == 'T' || value[10] == ' ') && digits(value, 11)
+	minute := hour && len(value) >= 16 && value[13] == ':' && digits(value, 14)
+	day_month := [4]u8{value[8], value[9], value[5], value[6]} if day else {}
+	hours := [4]u8{value[11], value[12], value[14], value[15]} if minute else {}
+	day = day && is_pair_within(string(day_month[:]), 31, 12, 1)
+	minute = minute && day && is_pair_within(string(hours[:]), 23, 59, 0)
+	carried := 16 if minute else 10 if day else 4
+
+	previous := format_of(&tag.frames[first[0]])
+	texts := [3]struct {
+		id:    string,
+		value: string,
+		keep:  bool,
+	} {
+		{"TYER", value[:4], true},
+		{"TDAT", string(day_month[:]), day},
+		{"TIME", string(hours[:]), minute},
+	}
+	frames: [3]Frame
+	n := 0
+	for text in texts {
+		if !text.keep {
+			continue
+		}
+		frame, err := text_frame(tag, text.id, {text.value}, previous)
+		if err != nil {
+			for &f in frames[:n] {
+				destroy_frame(&f)
+			}
+			return err
+		}
+		frames[n] = frame
+		n += 1
+	}
+	if several || len(value) > carried {
+		if err := note(dropped, "TDRC", .Partly_Converted, allocator); err != nil {
+			for &f in frames[:n] {
+				destroy_frame(&f)
+			}
+			return err
+		}
+	}
+	return replace_date_parts(tag, &remove, frames[:n])
+}
+
+// Re-encodes a text frame its new version cannot hold as it is: an encoding the version lacks,
+// or, before ID3v2.4, several values, which ID3v2.3 joins with "/" (genre references go in
+// parentheses before the rest). ok is false when such a frame cannot be decoded and encoded again.
+@(private)
+convert_text :: proc(tag: ^Tag, index: int) -> (ok: bool, err: Error) {
 	f := &tag.frames[index]
 	as_stored :=
 		f.problem == .Encrypted || f.problem == .Bad_Compression || f.problem == .Too_Short
@@ -333,7 +784,11 @@ reencode_if_needed :: proc(tag: ^Tag, index: int) -> (ok: bool, err: Error) {
 		return true, nil
 	}
 	encoding, known := encoding_of(f.data[0])
-	if !known || encoding_holds(encoding, tag.version) {
+	if !known {
+		return true, nil
+	}
+	holds := encoding_holds(encoding, tag.version)
+	if holds && (tag.version == .V2_4 || f.id[0] != 'T') {
 		return true, nil
 	}
 	content, decode_err := decode_frame(f, .V2_4, tag.allocator)
@@ -342,13 +797,22 @@ reencode_if_needed :: proc(tag: ^Tag, index: int) -> (ok: bool, err: Error) {
 		if alloc, is_alloc := decode_err.(runtime.Allocator_Error); is_alloc {
 			return false, alloc
 		}
-		return false, nil
+		return holds, nil
 	}
+	changed := !holds
 	// Only versions before ID3v2.4 lack encodings, and they hold Latin-1 or UTF-16.
 	switch &c in content {
 	case Text:
+		if len(c.values) > 1 {
+			join_values(&c.values, f.id == "TCON", tag.allocator) or_return
+			changed = true
+		}
 		c.encoding = .Latin1 if fits_all_latin1(..c.values) else .UTF16
 	case User_Text:
+		if len(c.values) > 1 {
+			join_values(&c.values, false, tag.allocator) or_return
+			changed = true
+		}
 		c.encoding =
 			.Latin1 if fits_all_latin1(..c.values) && fits_all_latin1(c.description) else .UTF16
 	case User_Url:
@@ -365,7 +829,10 @@ reencode_if_needed :: proc(tag: ^Tag, index: int) -> (ok: bool, err: Error) {
 	     Chapter,
 	     Table_Of_Contents,
 	     Binary:
-		return false, nil
+		return holds, nil
+	}
+	if !changed {
+		return true, nil
 	}
 	replacement := encode_frame(content, f.id, tag.version, tag.allocator) or_return
 	replacement.status = f.status
@@ -376,73 +843,56 @@ reencode_if_needed :: proc(tag: ^Tag, index: int) -> (ok: bool, err: Error) {
 	return true, nil
 }
 
+// Joins several values into one with "/"; genre references ("17", "RX") go first in parentheses,
+// as ID3v2.3 writes them, and text that starts with a parenthesis is escaped with another.
 @(private)
-fits_all_latin1 :: proc(values: ..string) -> bool {
+join_values :: proc(values: ^[]string, genres: bool, allocator: runtime.Allocator) -> Error {
+	reference :: proc(genres: bool, value: string) -> bool {
+		return genres && genre_reference(value) != ""
+	}
+	escaped :: proc(genres: bool, value: string) -> bool {
+		return genres && strings.has_prefix(value, "(")
+	}
+	size, texts := 0, 0
 	for value in values {
-		if !fits_latin1(value, max(int)) {
-			return false
+		switch {
+		case reference(genres, value):
+			size += len(value) + 2
+		case:
+			size += len(value) + (1 if texts > 0 else 0) + (1 if escaped(genres, value) else 0)
+			texts += 1
 		}
 	}
-	return true
-}
-
-// The involved people of a tag: ID3v2.3's IPLS, or ID3v2.4's TIPL and TMCL, as pairs of a role and
-// a name.
-@(private)
-involved_people :: proc(
-	tag: ^Tag,
-	allocator: runtime.Allocator,
-) -> (
-	people: []string,
-	err: runtime.Allocator_Error,
-) {
-	out := make([dynamic]string, allocator)
-	defer if err != nil {
-		partial := out[:]
-		destroy_strings(&partial, allocator)
+	out := make([]u8, size, allocator) or_return
+	at := 0
+	for value in values {
+		if reference(genres, value) {
+			at += copy(out[at:], "(")
+			at += copy(out[at:], value)
+			at += copy(out[at:], ")")
+		}
 	}
-	for &f in tag.frames {
-		if !contains(PEOPLE_IDS, f.id) || len(f.data) < 1 {
+	texts = 0
+	for value in values {
+		if reference(genres, value) {
 			continue
 		}
-		encoding, ok := encoding_of(f.data[0])
-		if !ok || f.problem != .None {
-			continue
+		if texts > 0 {
+			at += copy(out[at:], "/")
 		}
-		for rest := f.data[1:]; len(rest) > 0; {
-			text: []u8
-			text, rest, _ = split_terminated(encoding, rest)
-			value := decode_text(encoding, text, allocator) or_else ""
-			append(&out, value) or_return
+		if escaped(genres, value) {
+			at += copy(out[at:], "(")
 		}
+		at += copy(out[at:], value)
+		texts += 1
 	}
-	return out[:], nil
-}
-
-// Writes involved people as pairs of strings each ended by a terminator: IPLS in ID3v2.3, TIPL in
-// ID3v2.4, IPL in ID3v2.2.
-@(private)
-set_people :: proc(tag: ^Tag, people: []string) -> Error {
-	encoding := default_encoding(tag.version, ..people)
-	data := make([dynamic]u8, tag.allocator)
-	defer delete(data)
-	append(&data, u8(encoding)) or_return
-	for value in people {
-		encode_string(&data, encoding, value, true) or_return
-	}
-	id := "TIPL" if tag.version == .V2_4 else "IPL" if tag.version == .V2_2 else "IPLS"
-	frame := make_frame(id, data[:], tag.allocator) or_return
-	return insert_frame(tag, -1, frame)
-}
-
-// Inserts a frame at index, or at the end for -1; the tag takes it, and frees it on an error.
-@(private)
-insert_frame :: proc(tag: ^Tag, index: int, frame: Frame) -> Error {
-	frame := frame
-	at := index if index >= 0 && index <= len(tag.frames) else len(tag.frames)
-	if _, err := inject_at(&tag.frames, at, frame); err != nil {
-		destroy_frame(&frame)
+	one, err := make([]string, 1, allocator)
+	if err != nil {
+		delete(out, allocator)
 		return err
 	}
+	one[0] = string(out)
+	delete_strings(values^, allocator)
+	values^ = one
 	return nil
 }

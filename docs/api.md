@@ -407,7 +407,8 @@ v1_from_tag :: proc(tag: ^Tag, version: V1_Version, enhanced := false, allocator
 
 ```odin
 // Converts the tag in place. From .None, only sets the version; to .None, drops every frame.
-// The frames that the target version cannot hold are removed and returned.
+// The frames that the target version cannot hold are removed and returned in their order, with
+// those it could carry only in part. On an error the tag is left as it was.
 convert :: proc(tag: ^Tag, to: V2_Version, allocator := context.allocator) -> (dropped: Dropped_Frames, err: Error)
 
 Dropped_Frames :: [dynamic]Dropped_Frame
@@ -421,6 +422,7 @@ Drop_Reason :: enum u8 {
 	Discard_On_Tag_Alter, // an unknown frame that asks to be dropped when its tag changes
 	Not_Encodable, // text in an encoding the target lacks, in a frame odid3 cannot re-encode
 	Tag_Removed, // converted to .None
+	Partly_Converted, // converted, but part of its value has no place in the target (a date's seconds in ID3v2.3)
 }
 
 // A deep copy, to preview a conversion without touching the original.
