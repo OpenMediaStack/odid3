@@ -227,6 +227,19 @@ undo_unsynchronisation :: proc(
 	return data[:n], true, nil
 }
 
+// Appends data unsynchronised: a 0x00 after every 0xFF followed by 0x00 or a byte of 0xE0 or more,
+// and after a last 0xFF.
+@(private)
+unsynchronise :: proc(out: ^[dynamic]u8, data: []u8) -> runtime.Allocator_Error {
+	for c, i in data {
+		append(out, c) or_return
+		if c == 0xFF && (i + 1 == len(data) || data[i + 1] >= 0xE0 || data[i + 1] == 0) {
+			append(out, 0) or_return
+		}
+	}
+	return nil
+}
+
 // Gives a slice shrunk in place its new size in its allocation: some allocators need the size a
 // block was allocated with when it is freed.
 @(private)
