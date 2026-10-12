@@ -405,8 +405,9 @@ is_picture_id :: proc(id: string, version: V2_Version) -> bool {
 
 // ID3v2.4 frame sizes are syncsafe, but iTunes wrote plain integers for years (mutagen's
 // determine_bpi in mutagen/id3/_tags.py deals with it too). When the two readings differ, the one
-// that leads to another frame or to the end of the tag wins, then the one that leads to padding; once
-// a plain size wins, plain sizes win ties for the rest of the tag. -1 when neither can be right.
+// that leads to another frame or to the end of the tag wins, then the one that leads to padding;
+// once a plain size wins, plain sizes win ties for the rest of the tag. -1 when neither can be
+// right.
 @(private)
 frame_size :: proc(
 	body: ^Body,
@@ -542,8 +543,8 @@ read_frame :: proc(
 
 // The bytes a frame's format flags add before its content: in ID3v2.3 the decompressed size, the
 // encryption method and the group, in ID3v2.4 the group, the encryption method and the data length
-// indicator. Reads them from the start of the frame's data and returns how many there are, 0 when the
-// frame is too short to hold them.
+// indicator. Reads them from the start of the frame's data and returns how many there are, 0 when
+// the frame is too short to hold them.
 @(private)
 split_frame_extras :: proc(f: ^Frame, version: V2_Version) -> (n: int) {
 	fields: [3]struct {
