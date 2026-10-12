@@ -33,14 +33,23 @@ v22_picture :: proc(t: ^testing.T) {
 	file := fixture(t, "v22_pic.mp3")
 	tags := read(t, file)
 	defer odid3.destroy(&tags)
+	testing.expect_value(t, tags.warnings, odid3.Warnings{})
+	if len(tags.v2.frames) != 2 {
+		testing.fail_now(t, "two frames expected")
+	}
 	picture := tags.v2.frames[1]
 	testing.expect_value(t, picture.id, "PIC")
+	testing.expect_value(t, picture.size, 102)
 	testing.expect(t, bytes.has_prefix(picture.data, text("\x00PNG\x03\x00\x89PNG")))
 
 	skipped, err := odid3.read_bytes(file, {skip_picture_data = true})
 	defer odid3.destroy(&skipped)
 	testing.expect_value(t, err, nil)
+	if len(skipped.v2.frames) != 2 {
+		testing.fail_now(t, "two frames expected")
+	}
 	testing.expect_value(t, skipped.v2.frames[1].problem, odid3.Frame_Problem.Skipped_Picture)
+	testing.expect(t, skipped.v2.frames[1].data == nil)
 	testing.expect_value(t, string(skipped.v2.frames[0].data), "\x00With a picture")
 }
 
@@ -78,4 +87,40 @@ damaged_v22_frames :: proc(t: ^testing.T) {
 	testing.expect_value(t, tags.warnings, odid3.Warnings{.Damaged_Frames})
 	testing.expect_value(t, len(tags.v2.frames), 1)
 	odid3.destroy(&tags)
+}
+
+@(test)
+v22_padding_odd_ids_and_empty_frames :: proc(t: ^testing.T) {
+	title := frame22("TT2", text("\x00Title"))
+	padded := read(t, tag_file(2, 0, title, frame22("TP1", nil), zeros(64)))
+	testing.expect_value(t, padded.warnings, odid3.Warnings{})
+	testing.expect_value(t, len(padded.v2.frames), 2)
+	testing.expect_value(t, len(padded.v2.frames[1].data), 0)
+	testing.expect_value(t, padded.v2.padding, 64)
+	odid3.destroy(&padded)
+
+	odd := concat(text("TT\x00"), {0, 0, 2}, text("\x00x"))
+	tags := read(t, tag_file(2, 0, odd, title))
+	testing.expect_value(t, tags.warnings, odid3.Warnings{.Bad_Frame_Ids})
+	testing.expect_value(t, len(tags.v2.frames), 2)
+	testing.expect_value(t, tags.v2.frames[0].id, "TT\x00")
+	odid3.destroy(&tags)
+
+	v23_frames := read(t, tag_file(2, 0, frame(3, "TIT2", text("\x00Title"))))
+	testing.expect_value(t, v23_frames.warnings, odid3.Warnings{.Damaged_Frames})
+	odid3.destroy(&v23_frames)
+
+	v22_frames := read(t, tag_file(3, 0, title))
+	testing.expect_value(t, v22_frames.warnings, odid3.Warnings{.Damaged_Frames})
+	odid3.destroy(&v22_frames)
+}
+
+// iTunes wrote ID3v2.2's PIC, with a NUL, in some ID3v2.3 tags.
+@(test)
+itunes_pictures_in_v23_are_skipped :: proc(t: ^testing.T) {
+	picture := concat(text("PIC\x00"), {0, 0, 0, 6, 0, 0}, text("\x00PNG\x03\x00"))
+	tags, err := odid3.read_bytes(tag_file(3, 0, picture), {skip_picture_data = true})
+	defer odid3.destroy(&tags)
+	testing.expect_value(t, err, nil)
+	testing.expect_value(t, tags.v2.frames[0].problem, odid3.Frame_Problem.Skipped_Picture)
 }

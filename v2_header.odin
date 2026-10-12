@@ -165,6 +165,7 @@ read_v2_tag :: proc(
 		start     = range.offset + V2_HEADER_SIZE,
 		end       = min(end, src.size),
 		truncated = end > src.size,
+		version   = tag.version,
 	}
 	raw: []u8
 	removed: [dynamic]u32
