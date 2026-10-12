@@ -86,12 +86,14 @@ read_source :: proc(
 	return
 }
 
-// Frees what reading allocated and resets the value.
+// Frees what reading or decode_frame allocated and resets the value. A decoded content is freed
+// with the allocator given to decode_frame.
 destroy :: proc {
 	destroy_tags,
 	destroy_tag,
 	destroy_frame,
 	destroy_v1,
+	destroy_content,
 }
 
 // Frees what read_bytes or read_file allocated in tags and resets it.
