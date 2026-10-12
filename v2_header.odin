@@ -114,15 +114,6 @@ v2_version :: proc(major: u8) -> V2_Version {
 }
 
 @(private)
-v2_total_size :: proc(h: V2_Header) -> i64 {
-	total := V2_HEADER_SIZE + h.size
-	if .Footer in tag_flags(h.major, h.flags) {
-		total += V2_FOOTER_SIZE
-	}
-	return total
-}
-
-@(private)
 tag_flags :: proc(major, b: u8) -> (flags: Tag_Flags) {
 	if b & 0x80 != 0 {
 		flags += {.Unsynchronisation}
@@ -178,9 +169,6 @@ read_v2_tag :: proc(
 		end       = min(end, src.size),
 		truncated = end > src.size,
 		version   = tag.version,
-	}
-	if .Footer in tag.flags && !body.truncated {
-		check_footer(src, end, header, warnings) or_return
 	}
 	raw: []u8
 	removed: [dynamic]u32
@@ -327,15 +315,4 @@ extended_header_v24 :: proc(tag: ^Tag, b: []u8) -> (size: i64, good: bool) {
 	}
 	tag.extended = extended
 	return size, true
-}
-
-@(private)
-check_footer :: proc(src: ^Source, at: i64, header: V2_Header, warnings: ^Warnings) -> Error {
-	buf: [V2_FOOTER_SIZE]u8
-	footer := source_bytes(src, at, buf[:]) or_return
-	footer_header, status := parse_v2_footer(footer)
-	if status != .Valid || footer_header != header {
-		warnings^ += {.Bad_Footer}
-	}
-	return nil
 }

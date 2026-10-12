@@ -482,6 +482,7 @@ PY
 # v1_0_ascii.mp3. Its header has the footer flag (0x10) and a footer ("3DI", then the same bytes as
 # the header) ends it, so that it can be found from the end of the file.
 # Expect: ID3v2.4 title "Appended title", artist "Marlowe Kite"; the ID3v1 values of v1_0_ascii.mp3.
+#   ffprobe ignores the appended tag and only reports the ID3v1 values.
 python3 - no_tag.mp3 v1_0_ascii.mp3 v24_appended.mp3 <<'PY'
 import sys
 def syncsafe(n):

@@ -17,7 +17,8 @@ expect_layout_inside :: proc(t: ^testing.T, name: string, data: []u8, layout: od
 		layout.v1_enhanced,
 		layout.v1,
 	}
-	slice.sort_by(ranges[:], proc(a, b: odid3.Range) -> bool {
+	// APE, Lyrics3 and an appended tag come in any order between the audio and the Enhanced TAG.
+	slice.sort_by(ranges[3:6], proc(a, b: odid3.Range) -> bool {
 		return a.offset < b.offset
 	})
 	end: i64 = 0

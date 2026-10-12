@@ -69,15 +69,7 @@ read_source :: proc(
 	}
 	header: V2_Header
 	tags.layout, header, tags.warnings = locate(src) or_return
-	v2_range := tags.layout.v2
-	if v2_range.size == 0 && tags.layout.v2_appended.size > 0 {
-		v2_range = tags.layout.v2_appended
-		buf: [V2_HEADER_SIZE]u8
-		head := source_bytes(src, v2_range.offset, buf[:]) or_return
-		header, _ = parse_v2_header(head)
-	} else if tags.layout.v2_appended.size > 0 {
-		tags.warnings += {.Second_V2_Tag}
-	}
+	v2_range := tags.layout.v2 if tags.layout.v2.size > 0 else tags.layout.v2_appended
 	if v2_range.size > 0 {
 		tags.v2 = read_v2_tag(src, v2_range, header, options, &tags.warnings, allocator) or_return
 	}

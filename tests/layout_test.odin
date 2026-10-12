@@ -176,7 +176,7 @@ tag_flags_by_version :: proc(t: ^testing.T) {
 		{2, 0xC0, .V2_2, {.Unsynchronisation, .Compression}, 30},
 		{3, 0xE0, .V2_3, {.Unsynchronisation, .Extended_Header, .Experimental}, 30},
 		{3, 0x10, .V2_3, {}, 30},
-		{4, 0xF0, .V2_4, {.Unsynchronisation, .Extended_Header, .Experimental, .Footer}, 40},
+		{4, 0xF0, .V2_4, {.Unsynchronisation, .Extended_Header, .Experimental, .Footer}, 30},
 	}
 	for c in cases {
 		data := concat(v2_header(c.major, c.flags, 20), zeros(30), audio)
