@@ -498,33 +498,36 @@ frame_status :: proc(version: V2_Version, b: u8) -> (status: Frame_Status) {
 
 @(private)
 frame_format :: proc(version: V2_Version, b: u8) -> (format: Frame_Format) {
-	bits: [Frame_Format_Flag]u8
-	if version == .V2_2 {
-		return
-	}
-	if version == .V2_4 {
-		bits = {
-			.Grouping              = 0x40,
-			.Compression           = 0x08,
-			.Encryption            = 0x04,
-			.Unsynchronisation     = 0x02,
-			.Data_Length_Indicator = 0x01,
-		}
-	} else {
-		bits = {
-			.Compression           = 0x80,
-			.Encryption            = 0x40,
-			.Grouping              = 0x20,
-			.Unsynchronisation     = 0,
-			.Data_Length_Indicator = 0,
-		}
-	}
-	for bit, flag in bits {
+	for bit, flag in format_bits(version) {
 		if bit != 0 && b & bit != 0 {
 			format += {flag}
 		}
 	}
 	return
+}
+
+// Where each format flag sits in a frame header; 0 for a flag the version does not have.
+@(private)
+format_bits :: proc(version: V2_Version) -> [Frame_Format_Flag]u8 {
+	if version == .V2_4 {
+		return {
+			.Grouping = 0x40,
+			.Compression = 0x08,
+			.Encryption = 0x04,
+			.Unsynchronisation = 0x02,
+			.Data_Length_Indicator = 0x01,
+		}
+	}
+	if version == .V2_3 {
+		return {
+			.Compression = 0x80,
+			.Encryption = 0x40,
+			.Grouping = 0x20,
+			.Unsynchronisation = 0,
+			.Data_Length_Indicator = 0,
+		}
+	}
+	return {}
 }
 
 // Padding is zeros after the last frame. Anything else there is reported, since rewriting the tag

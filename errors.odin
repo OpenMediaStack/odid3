@@ -19,6 +19,19 @@ Format_Error :: enum u8 {
 	Not_Decodable,
 	// Frame data that does not follow the layout of its frame.
 	Bad_Content,
+	// Rendering a tag whose version is .None.
+	No_Version,
+	// A tag over 256 MB (the largest size a syncsafe integer holds), or a frame over the largest
+	// size its version can write.
+	Tag_Too_Large,
+	// A frame ID that does not have the length of its version's IDs: 3 in ID3v2.2, 4 after.
+	Bad_Frame_Id,
+	// Text in UTF-16BE or UTF-8, which only ID3v2.4 has.
+	Encoding_Not_In_Version,
+	// A write option the version does not have, such as a footer before ID3v2.4.
+	Not_In_Version,
+	// Writing tags read with skip_picture_data: their pictures were not read.
+	Incomplete_Tag,
 }
 
 // What reading found wrong in a file. The result holds what could be read despite it.
