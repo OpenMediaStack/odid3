@@ -21,8 +21,8 @@ DAMAGE_WARNINGS :: Warnings {
 // The file bytes with its tags replaced by those of tags, allocated with allocator and owned by the
 // caller, who frees them with delete: the ID3v2 tag first (none when its version is .None), then
 // everything that lies between the tags of the file (the audio, APE and Lyrics3 tags, unknown
-// bytes) byte for byte, then ID3v1 (none when its version is .None): the file's own ID3v1 bytes
-// when they hold the same values, else tags.v1 in Latin-1. A second ID3v2 tag, stacked or
+// bytes) byte for byte, then ID3v1 (none when its version is .None): the file's own ID3v1 bytes,
+// with its Enhanced TAG, when they hold the same values, else tags.v1 in Latin-1. A second ID3v2 tag, stacked or
 // appended, is dropped. The tags are located in file again, so tags may come from another read
 // of it; damage found in file as it is now also needs replace_damaged.
 write_bytes :: proc(
@@ -290,15 +290,18 @@ v1_bytes :: proc(
 			return nil, err
 		}
 		enhanced := stored[:len(stored) - V1_SIZE]
+		// decode_v1 frees what it decoded when it fails.
 		in_file, decode_err := decode_v1(stored[len(enhanced):], enhanced, allocator)
-		defer destroy_v1(&in_file)
-		if decode_err == nil && same_v1(v1, &in_file) {
+		if decode_err != nil {
+			delete(stored, allocator)
+			return nil, decode_err
+		}
+		same := same_v1(v1, &in_file)
+		destroy_v1(&in_file)
+		if same {
 			return stored, nil
 		}
 		delete(stored, allocator)
-		if decode_err != nil {
-			return nil, decode_err
-		}
 	}
 	rendered, render_err := render_v1(v1, allocator)
 	return rendered, render_err

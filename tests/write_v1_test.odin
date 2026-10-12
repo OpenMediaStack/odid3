@@ -290,3 +290,66 @@ unchanged_v1_tags_keep_their_bytes :: proc(t: ^testing.T) {
 	rendered := odid3.render_v1(&tags.v1, context.temp_allocator)
 	testing.expect(t, bytes.equal(out[len(out) - len(rendered):], rendered))
 }
+
+@(test)
+v1_versions_and_enhanced_tag_changes :: proc(t: ^testing.T) {
+	file := fixture(t, "v1_utf8.mp3")
+	tags := read(t, file)
+	defer odid3.destroy(&tags)
+	// ID3v1.1 without a track is the same tag as ID3v1.0: its bytes are kept.
+	tags.v1.version = .V1_1
+	out, err := odid3.write_bytes(file, &tags, {}, context.temp_allocator)
+	testing.expect_value(t, err, nil)
+	testing.expect(t, bytes.equal(out[len(out) - 128:], file[len(file) - 128:]))
+
+	enhanced := fixture(t, "v1_enhanced.mp3")
+	with := read(t, enhanced)
+	defer odid3.destroy(&with)
+	e := with.v1.enhanced
+	with.v1.enhanced = nil
+	out, err = odid3.write_bytes(enhanced, &with, {}, context.temp_allocator)
+	testing.expect_value(t, err, nil)
+	again := read(t, out)
+	defer odid3.destroy(&again)
+	testing.expect_value(t, again.layout.v1_enhanced.size, 0)
+	with.v1.enhanced = e
+}
+
+@(test)
+v1_allocation_failures :: proc(t: ^testing.T) {
+	for name in ([]string{"v1_utf8.mp3", "v1_enhanced.mp3"}) {
+		dir := make_temp_dir(t)
+		file := fixture(t, name)
+		for changed in ([]bool{false, true}) {
+			tags := read(t, file)
+			defer odid3.destroy(&tags)
+			if changed {
+				tags.v1.genre = 17
+			}
+			written := false
+			for budget in 0 ..< 64 {
+				failing := Failing{context.allocator, budget}
+				allocator := failing_allocator(&failing)
+				out, err := odid3.write_bytes(file, &tags, {}, allocator)
+				if err == nil {
+					delete(out, allocator)
+					written = true
+					break
+				}
+			}
+			testing.expectf(t, written, "%s, changed %v: write_bytes", name, changed)
+
+			path := copy_fixture(t, dir, name)
+			written = false
+			for budget in 0 ..< 64 {
+				failing := Failing{context.allocator, budget}
+				if odid3.write_file(path, &tags, {}, failing_allocator(&failing)) == nil {
+					written = true
+					break
+				}
+				expect_untouched(t, dir, path, file, name)
+			}
+			testing.expectf(t, written, "%s, changed %v: write_file", name, changed)
+		}
+	}
+}

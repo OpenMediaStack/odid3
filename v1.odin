@@ -223,7 +223,9 @@ V1_Policy :: enum u8 {
 
 @(private)
 same_v1 :: proc(a, b: ^V1_Tag) -> bool {
-	if a.version != b.version || a.track != b.track || a.genre != b.genre {
+	a_version, a_track := written_version(a)
+	b_version, b_track := written_version(b)
+	if a_version != b_version || a_track != b_track || a.genre != b.genre {
 		return false
 	}
 	if a.title != b.title || a.artist != b.artist || a.album != b.album {
@@ -242,6 +244,19 @@ same_v1 :: proc(a, b: ^V1_Tag) -> bool {
 	}
 	same_times := ea.start_time == eb.start_time && ea.end_time == eb.end_time
 	return ea.speed == eb.speed && ea.genre == eb.genre && same_times
+}
+
+// The version and track a tag is written with: ID3v1.1 without a track is ID3v1.0, and ID3v1.0
+// has no track.
+@(private)
+written_version :: proc(v1: ^V1_Tag) -> (version: V1_Version, track: u8) {
+	switch {
+	case v1.version == .V1_1 && v1.track != 0:
+		return .V1_1, v1.track
+	case v1.version == .None:
+		return .None, 0
+	}
+	return .V1_0, 0
 }
 
 // The ID3v1 bytes of a tag: 128 bytes, or 355 when it holds an Enhanced TAG, which comes first;
