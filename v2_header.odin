@@ -75,6 +75,18 @@ parse_v2_header :: proc(b: []u8) -> (h: V2_Header, status: Header_Status) {
 	return {major = b[3], revision = b[4], flags = b[5], size = i64(size)}, .Valid
 }
 
+// A footer is the header again, with "3DI" in place of "ID3".
+@(private)
+parse_v2_footer :: proc(b: []u8) -> (h: V2_Header, status: Header_Status) {
+	if len(b) < V2_FOOTER_SIZE || string(b[:3]) != "3DI" {
+		return {}, .Absent
+	}
+	as_header: [V2_HEADER_SIZE]u8
+	copy(as_header[:], b)
+	copy(as_header[:3], "ID3")
+	return parse_v2_header(as_header[:])
+}
+
 // Syncsafe integers keep the high bit of every byte at 0, so that no size in a tag can look like
 // the 11 set bits that start an MPEG audio frame: 4 bytes hold 28 bits.
 @(private)
@@ -99,15 +111,6 @@ v2_version :: proc(major: u8) -> V2_Version {
 		return .V2_4
 	}
 	return .None
-}
-
-@(private)
-v2_total_size :: proc(h: V2_Header) -> i64 {
-	total := V2_HEADER_SIZE + h.size
-	if .Footer in tag_flags(h.major, h.flags) {
-		total += V2_FOOTER_SIZE
-	}
-	return total
 }
 
 @(private)

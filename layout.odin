@@ -13,6 +13,7 @@ Layout :: struct {
 	file_size:   i64,
 	v2:          Range, // the leading ID3v2 tag: header, frames, padding and footer
 	v2_stacked:  Range, // ID3v2 tags right after the first one, replaced by it on write
+	v2_appended: Range, // an ID3v2.4 tag at the end, found through its footer
 	audio:       Range, // what lies between the tags, kept byte for byte on write
 	ape:         Range, // found, never read
 	lyrics3:     Range, // found, never read
@@ -51,8 +52,15 @@ locate :: proc(
 	layout.file_size = src.size
 	audio_start: i64
 	audio_start, header = locate_v2(src, &layout, &warnings) or_return
-	audio_end := locate_trailing(src, audio_start, &layout) or_return
+	audio_end, appended := locate_trailing(src, audio_start, &layout) or_return
 	layout.audio = {audio_start, audio_end - audio_start}
+	switch {
+	case layout.v2_appended.size == 0:
+	case layout.v2.size == 0:
+		header = appended
+	case:
+		warnings += {.Second_V2_Tag}
+	}
 	return
 }
 
@@ -80,7 +88,8 @@ locate_v2 :: proc(
 		warnings^ += {.Unsupported_Version}
 		return 0, {}, nil
 	}
-	end = v2_total_size(header)
+	end = V2_HEADER_SIZE + header.size
+	end += v2_footer_size(src, end, header, warnings) or_return
 	if end > src.size {
 		warnings^ += {.Truncated_Tag}
 		end = src.size
@@ -109,21 +118,66 @@ skip_stacked_tags :: proc(
 	for _ in 0 ..< MAX_STACKED_TAGS {
 		head := source_bytes(src, end, buf[:]) or_return
 		header, status := parse_v2_header(head)
-		next := end + v2_total_size(header)
+		next := end + V2_HEADER_SIZE + header.size
 		if status != .Valid || next > src.size {
 			break
 		}
-		warnings^ += {.Second_V2_Tag}
+		footer_warnings: Warnings
+		next += v2_footer_size(src, next, header, &footer_warnings) or_return
+		if next > src.size {
+			break
+		}
+		warnings^ += footer_warnings + {.Second_V2_Tag}
 		end = next
 	}
 	return
 }
 
-// ID3v1 is always last. APE and Lyrics3 tags come before it, in either order.
+// A footer flag only counts when a footer follows the frames: the bytes after a tag whose flag lies
+// belong to the audio. A footer that does not repeat the header is still one.
 @(private)
-locate_trailing :: proc(src: ^Source, start: i64, layout: ^Layout) -> (end: i64, err: Error) {
+v2_footer_size :: proc(
+	src: ^Source,
+	at: i64,
+	header: V2_Header,
+	warnings: ^Warnings,
+) -> (
+	size: i64,
+	err: Error,
+) {
+	if .Footer not_in tag_flags(header.major, header.flags) || at >= src.size {
+		return 0, nil
+	}
+	buf: [V2_FOOTER_SIZE]u8
+	footer_header, status := parse_v2_footer(source_bytes(src, at, buf[:]) or_return)
+	if status == .Absent {
+		warnings^ += {.Bad_Footer}
+		return 0, nil
+	}
+	if status != .Valid || footer_header != header {
+		warnings^ += {.Bad_Footer}
+	}
+	return V2_FOOTER_SIZE, nil
+}
+
+// ID3v1 is always last. APE and Lyrics3 tags and an appended ID3v2.4 tag come before it, in any
+// order.
+@(private)
+locate_trailing :: proc(
+	src: ^Source,
+	start: i64,
+	layout: ^Layout,
+) -> (
+	end: i64,
+	appended: V2_Header,
+	err: Error,
+) {
 	end = src.size
-	if end - V1_SIZE >= start {
+	// The frames of an appended tag that ends the file can hold "TAG" where ID3v1 would start.
+	layout.v2_appended, appended = find_appended_v2(src, start, end) or_return
+	if layout.v2_appended.size > 0 {
+		end = layout.v2_appended.offset
+	} else if end - V1_SIZE >= start {
 		if has_magic(src, end - V1_SIZE, "TAG") or_return {
 			layout.v1 = {end - V1_SIZE, V1_SIZE}
 			end -= V1_SIZE
@@ -135,7 +189,14 @@ locate_trailing :: proc(src: ^Source, start: i64, layout: ^Layout) -> (end: i64,
 			end -= V1_ENHANCED_SIZE
 		}
 	}
-	for _ in 0 ..< 2 {
+	for _ in 0 ..< 3 {
+		if layout.v2_appended.size == 0 {
+			layout.v2_appended, appended = find_appended_v2(src, start, end) or_return
+			if layout.v2_appended.size > 0 {
+				end = layout.v2_appended.offset
+				continue
+			}
+		}
 		if layout.ape.size == 0 {
 			layout.ape = find_ape(src, start, end) or_return
 			if layout.ape.size > 0 {
@@ -153,6 +214,41 @@ locate_trailing :: proc(src: ^Source, start: i64, layout: ^Layout) -> (end: i64,
 		break
 	}
 	return
+}
+
+// ID3v2.4 structure, section 3.4: an appended tag must end with a footer, and its header must
+// agree with it.
+@(private)
+find_appended_v2 :: proc(
+	src: ^Source,
+	start, end: i64,
+) -> (
+	r: Range,
+	header: V2_Header,
+	err: Error,
+) {
+	if end - V2_HEADER_SIZE - V2_FOOTER_SIZE < start {
+		return
+	}
+	buf: [V2_FOOTER_SIZE]u8
+	footer := source_bytes(src, end - V2_FOOTER_SIZE, buf[:]) or_return
+	footer_header, status := parse_v2_footer(footer)
+	if status != .Valid ||
+	   footer_header.major != 4 ||
+	   .Footer not_in tag_flags(footer_header.major, footer_header.flags) {
+		return
+	}
+	offset := end - V2_HEADER_SIZE - footer_header.size - V2_FOOTER_SIZE
+	if offset < start {
+		return
+	}
+	head_buf: [V2_HEADER_SIZE]u8
+	head := source_bytes(src, offset, head_buf[:]) or_return
+	head_header, head_status := parse_v2_header(head)
+	if head_status != .Valid || head_header != footer_header {
+		return
+	}
+	return {offset, end - offset}, head_header, nil
 }
 
 // An APE tag ends with a 32 byte footer: "APETAGEX", a version, the size of the items and the

@@ -478,6 +478,24 @@ open(sys.argv[1], 'wb').write(bytes(text))
 open(sys.argv[2], 'wb').write(stream)
 PY
 
+# v24_appended.mp3: an ID3v2.4 tag appended after the audio of no_tag.mp3, before the ID3v1 tag of
+# v1_0_ascii.mp3. Its header has the footer flag (0x10) and a footer ("3DI", then the same bytes as
+# the header) ends it, so that it can be found from the end of the file.
+# Expect: ID3v2.4 title "Appended title", artist "Marlowe Kite"; the ID3v1 values of v1_0_ascii.mp3.
+#   ffprobe ignores the appended tag and only reports the ID3v1 values.
+python3 - no_tag.mp3 v1_0_ascii.mp3 v24_appended.mp3 <<'PY'
+import sys
+def syncsafe(n):
+    return bytes([(n >> 21) & 0x7F, (n >> 14) & 0x7F, (n >> 7) & 0x7F, n & 0x7F])
+def frame(frame_id, data):
+    return frame_id + syncsafe(len(data)) + b'\x00\x00' + data
+frames = frame(b'TIT2', b'\x03Appended title') + frame(b'TPE1', b'\x03Marlowe Kite')
+fields = b'\x04\x00\x10' + syncsafe(len(frames))
+tag = b'ID3' + fields + frames + b'3DI' + fields
+v1 = open(sys.argv[2], 'rb').read()[-128:]
+open(sys.argv[3], 'wb').write(open(sys.argv[1], 'rb').read() + tag + v1)
+PY
+
 # truncated_tag.mp3: the first 150 bytes of v23_cover.mp3, cut inside the APIC frame.
 # Expect: a partial tag (title "With a cover") and a warning, no crash.
 head -c 150 v23_cover.mp3 >truncated_tag.mp3

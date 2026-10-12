@@ -19,8 +19,11 @@ Warning :: enum u8 {
 	Truncated_Tag,
 	// An ID3v2 version after 2.4: the tag is kept as unknown bytes.
 	Unsupported_Version,
-	// Another ID3v2 tag right after the first one. Writing replaces both with a single tag.
+	// Another ID3v2 tag, right after the first one or appended at the end. Writing replaces both
+	// with a single tag.
 	Second_V2_Tag,
+	// An ID3v2.4 footer that does not repeat the tag header.
+	Bad_Footer,
 	// A frame header that cannot be right: the frames after it are lost.
 	Damaged_Frames,
 	// An extended header that cannot be right. When its size cannot be trusted either, the frames

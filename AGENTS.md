@@ -181,6 +181,7 @@ Florent's answers to the questions the plan raised:
 
 1. **Compressed frames on write** use a small deflate encoder of our own in `deflate.odin`, rather than `vendor:zlib`: the library stays free of C, its allocations go through Odin's allocators (so the test runner sees them), and it keeps compiling for targets without a C zlib, such as a future web build of Colophon.
 2. **The MPEG audio code** of the prototype (duration, bitrate, Xing and VBRI headers) goes into a package inside Colophon, fed by odid3's `Layout` (which says where the audio starts and ends). It moves to its own library only if another Odin program needs it.
-3. **Two ID3v2 tags in one file** (a leading tag and an appended one, or two leading tags left by a broken tagger): the first is read, the other is reported as a warning, and writing puts a single leading tag in place of both.
+3. **Two ID3v2 tags in one file** (a leading tag and an appended one, or two leading tags left by a broken tagger): the first is read, the other is reported as a warning, and writing puts a single leading tag in place of both. This departs from section 5 of the ID3v2.4 structure, where a later tag updates the earlier one; TagLib, mutagen and ffmpeg do not read appended tags at all.
 4. **The extended header** is read but dropped on write in v1. A CRC option can come later if developer mode wants it.
 5. **A pre-release for Colophon**: if Colophon wants to start on the reading API before the v1 tag, Florent tags `v0.1.0` after the reading slices.
+6. **One package**, not `v1` and `v2` subpackages: both share the layout, the errors, the text encodings and `Tags`, which subpackages would have to make public. File names carry the split instead (`v1.odin`, `v2_header.odin`, `v2_frames.odin`).
