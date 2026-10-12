@@ -123,7 +123,7 @@ short_reads_give_the_same_tags :: proc(t: ^testing.T) {
 	defer destroy_tags(&tags)
 	testing.expect_value(t, err, nil)
 	testing.expect_value(t, tags.layout.lyrics3, Range{1000, i64(len(lyrics))})
-	testing.expect_value(t, tags.v1.version, V1_Version.V1_0)
+	testing.expect_value(t, tags.v1.title, "Title")
 }
 
 @(test)
