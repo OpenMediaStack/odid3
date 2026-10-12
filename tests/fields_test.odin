@@ -449,8 +449,13 @@ ffprobe_tags :: proc(t: ^testing.T, name: string) -> (tags: map[string]string, o
 	if err != nil {
 		return nil, false
 	}
+	return ffprobe_flat_tags(string(data)), true
+}
+
+// The format tags in ffprobe's flat output.
+ffprobe_flat_tags :: proc(output: string) -> (tags: map[string]string) {
 	tags = make(map[string]string, context.temp_allocator)
-	text := string(data)
+	text := output
 	for line in strings.split_lines_iterator(&text) {
 		prefix :: "format.tags."
 		if !strings.has_prefix(line, prefix) {
@@ -460,7 +465,7 @@ ffprobe_tags :: proc(t: ^testing.T, name: string) -> (tags: map[string]string, o
 		value := strings.trim_prefix(strings.trim_suffix(line[equal + 1:], "\""), "\"")
 		tags[line[len(prefix):equal]] = value
 	}
-	return tags, true
+	return
 }
 
 @(test)
