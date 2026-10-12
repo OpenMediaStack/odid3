@@ -10,6 +10,11 @@ Write_Options :: struct {
 	// The whole tag; ID3v2.4 frames can also ask for it one by one. ffmpeg misreads the frames of
 	// ID3v2.2 and 2.3 tags written so, after the first byte unsynchronisation inserts.
 	unsynchronisation: bool,
+	// Every frame but chapters (whose frames inside odid3 would no longer inflate) and encrypted
+	// ones, ID3v2.3 and 2.4 only; frames can also ask for it one by one. A frame is compressed even
+	// when that makes it larger, as a test file may want. ffmpeg reads compressed ID3v2.3 frames as
+	// if they were not.
+	compression:       bool,
 	// Allow rewriting a file whose tag was read with damage warnings (see write_file), and
 	// rendering a tag whose frames could not be read at all (a compressed ID3v2.2 tag).
 	replace_damaged:   bool,
@@ -26,12 +31,13 @@ MAX_TAG_SIZE :: 1 << 28 - 1
 // allocator and owned by the caller, who frees them with delete. Each frame keeps its status and
 // format flags and the bytes they need, so a frame read from a file comes out byte for byte, but
 // for what the version writes its own way: syncsafe sizes in ID3v2.4 (where old iTunes wrote plain
-// ones), reserved flag bits cleared, and unsynchronisation as the write options and the ID3v2.4
-// frames ask, the size limit applying to the tag as written. Encrypted and badly compressed frames
-// are written back as stored. A frame read from a file
-// keeps its text encoding even when its version lacks it (some taggers wrote UTF-8 in ID3v2.3); a
-// new frame must use one the version has. The header keeps the revision and the experimental flag;
-// the extended header is not written.
+// ones), reserved flag bits cleared, compression and unsynchronisation as the write options and
+// the frames ask, the size limit applying to the tag as written. A compressed frame is compressed
+// again with odid3's encoder: its content stays, its bytes may differ. Encrypted and badly
+// compressed frames are written back as stored. A frame read from a file keeps its text encoding
+// even when its version lacks it (some taggers wrote UTF-8 in ID3v2.3); a new frame must use one
+// the version has. The header keeps the revision and the experimental flag; the extended header is
+// not written.
 render :: proc(
 	tag: ^Tag,
 	options := Write_Options{},
@@ -45,11 +51,18 @@ render :: proc(
 	}
 	footer := options.footer
 	unsync := options.unsynchronisation
-	if footer && tag.version != .V2_4 {
+	if footer && tag.version != .V2_4 || options.compression && tag.version == .V2_2 {
 		return nil, .Not_In_Version
 	}
 	if .Compression in tag.flags && !options.replace_damaged {
 		return nil, .Incomplete_Tag
+	}
+	forced: Frame_Format
+	if unsync {
+		forced += {.Unsynchronisation}
+	}
+	if options.compression {
+		forced += {.Compression}
 	}
 	out := make([dynamic]u8, 0, 1024, allocator) or_return
 	defer if err != nil {
@@ -70,7 +83,7 @@ render :: proc(
 	}
 	every_frame_unsync := tag.version == .V2_4 && len(tag.frames) > 0
 	for &f in tag.frames {
-		render_frame(body, &f, tag.version, unsync) or_return
+		render_frame(body, &f, tag.version, forced) or_return
 		every_frame_unsync &&= frame_unsynchronised(&f)
 		framed := len(body) if body == &whole else len(body) - V2_HEADER_SIZE
 		if framed > MAX_TAG_SIZE {
@@ -147,16 +160,17 @@ put_be32 :: proc(b: []u8, n: u32) {
 	b[3] = u8(n)
 }
 
-// A frame whose data is its content is written with the bytes its flags need before the content;
-// one whose data is not (encrypted, badly compressed, too short) is written back as it was stored.
-// A frame read from a file only needs an ID that a reader finds again; a new one, a valid ID and a
-// text encoding its version has.
+// A frame whose data is its content is written with the bytes its flags need before the content,
+// compressed and unsynchronised when its format or forced asks for it; one whose data is not
+// (encrypted, badly compressed, too short) is written back as it was stored. A frame read from a
+// file only needs an ID that a reader finds again; a new one, a valid ID and a text encoding its
+// version has.
 @(private)
 render_frame :: proc(
 	out: ^[dynamic]u8,
 	f: ^Frame,
 	version: V2_Version,
-	unsynchronise_all := false,
+	forced: Frame_Format = {},
 ) -> Error {
 	if f.problem == .Skipped_Picture {
 		return .Incomplete_Tag
@@ -179,14 +193,23 @@ render_frame :: proc(
 			return .Encoding_Not_In_Version
 		}
 	}
-	unsync := version == .V2_4 && (unsynchronise_all || frame_unsynchronised(f))
+	unsync := version == .V2_4 && (.Unsynchronisation in forced || frame_unsynchronised(f))
+	asked := f.format
+	if f.id != "CHAP" && f.id != "CTOC" && .Encryption not_in f.format {
+		asked += forced
+	}
+	compress := !as_stored && version != .V2_2 && .Compression in asked
 	format := f.format - {.Unsynchronisation}
 	if unsync {
 		format += {.Unsynchronisation}
 	}
-	if !as_stored {
-		// Compressing on write comes with its own option; the data is written as it is.
-		format -= {.Compression}
+	if compress {
+		format += {.Compression}
+		// ID3v2.4 gives the size before compression in the data length indicator, which a
+		// compressed frame must have.
+		if version == .V2_4 {
+			format += {.Data_Length_Indicator}
+		}
 	}
 	if version != .V2_4 {
 		format -= {.Data_Length_Indicator}
@@ -231,15 +254,25 @@ render_frame :: proc(
 	}
 
 	payload := f.data
+	compressed: []u8
+	defer delete(compressed, out.allocator)
+	if compress {
+		// The size before compression is written too, and has the same limit.
+		if len(f.data) > MAX_TAG_SIZE {
+			return .Tag_Too_Large
+		}
+		compressed = deflate_zlib(f.data, out.allocator) or_return
+		payload = compressed
+	}
 	stored: [dynamic]u8
 	stored.allocator = out.allocator
 	defer delete(stored)
 	if unsync {
 		// The bytes the flags add and the data are one stream.
-		if unsynchronised_size(extras[:n], f.data) > MAX_TAG_SIZE {
+		if unsynchronised_size(extras[:n], payload) > MAX_TAG_SIZE {
 			return .Tag_Too_Large
 		}
-		unsynchronise(&stored, extras[:n], f.data) or_return
+		unsynchronise(&stored, extras[:n], payload) or_return
 		n = 0
 		payload = stored[:]
 	}
