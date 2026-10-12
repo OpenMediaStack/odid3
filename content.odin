@@ -280,9 +280,9 @@ decode_values :: proc(
 	return
 }
 
-// ID3v2.4, section 4: all the UTF-16 strings of a frame share one byte order, so a string without a
-// byte order mark follows the order of the first one. Decoding a string as UTF16BE still honours its
-// own byte order mark.
+// ID3v2.4, section 4: all the UTF-16 strings of a frame share one byte order, so a string
+// without a byte order mark follows the order of the first one. Decoding a string as UTF16BE
+// still honours its own byte order mark.
 @(private)
 byte_order_of :: proc(encoding: Encoding, first: []u8) -> Encoding {
 	if encoding == .UTF16 && len(first) >= 2 && first[0] == 0xFE && first[1] == 0xFF {
