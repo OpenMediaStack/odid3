@@ -213,9 +213,10 @@ destroy_v1_enhanced :: proc(e: ^V1_Enhanced, allocator: runtime.Allocator) {
 	delete(e.end_time, allocator)
 }
 
-// What to do with ID3v1 when writing.
+// What sync_v1 does with ID3v1: Keep rewrites it where the file has one and never adds one,
+// Always writes one, Never removes it.
 V1_Policy :: enum u8 {
-	Keep, // rewrite ID3v1 where the file has one, never add one
+	Keep,
 	Always,
 	Never,
 }

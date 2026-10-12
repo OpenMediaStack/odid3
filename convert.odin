@@ -4,16 +4,17 @@ import "base:runtime"
 import "core:slice"
 import "core:strings"
 
-// A frame a conversion removed, and why.
+// A frame a conversion removed, or carried only in part, and why.
 Dropped_Frame :: struct {
 	id:     string,
 	reason: Drop_Reason,
 }
 
-// The frames a conversion removed. Free with destroy.
+// The frames a conversion removed or carried only in part, in their order. Free with destroy and
+// the allocator given to convert.
 Dropped_Frames :: [dynamic]Dropped_Frame
 
-// Why a conversion removed a frame.
+// Why a conversion removed a frame, or carried it only in part.
 Drop_Reason :: enum u8 {
 	// The target version has no frame with this layout (RVA2 in ID3v2.3, RVAD in ID3v2.4...), or
 	// the value has no place there (a second date, a day without its year, a date that is none).
@@ -86,11 +87,12 @@ clone_frame :: proc(f: ^Frame, allocator: runtime.Allocator) -> (duplicate: Fram
 // TORY into TDOR, IPLS into TIPL, and back; ID3v2.2's 3 letter IDs to 4 letters and back, PIC
 // into APIC), converts the frames inside chapters, re-encodes text the target cannot hold, joins
 // several values with "/" before ID3v2.4, and removes the frames it cannot carry; ID3v2.2 frames
-// have no flags, so encrypted and grouped frames are removed and the others lose theirs. It returns, in their order, the frames it removed and those
-// whose value it could only carry in part, each with the reason. From .None it only sets the
-// version; to .None it removes every frame. Tags whose frames were not all read (a compressed
-// ID3v2.2 tag, pictures skipped when they need a new layout) give .Incomplete_Tag. On an error
-// the tag is left as it was. Free the result with destroy.
+// have no flags, so encrypted and grouped frames are removed and the others lose theirs. It
+// returns, in their order, the frames it removed and those whose value it could only carry in part,
+// each with the reason. From .None it only sets the version; to .None it removes every frame. Tags
+// whose frames were not all read (a compressed ID3v2.2 tag, pictures skipped when they need a new
+// layout) give .Incomplete_Tag. On an error the tag is left as it was. Free the result with
+// destroy and the same allocator.
 convert :: proc(
 	tag: ^Tag,
 	to: V2_Version,
@@ -721,7 +723,7 @@ v23_to_v22 :: proc(id: string) -> string {
 	return ""
 }
 
-// Frees the IDs of dropped frames and the list.
+// Frees the IDs of dropped frames and the list, with the allocator given to convert.
 destroy_dropped :: proc(dropped: ^Dropped_Frames, allocator := context.allocator) {
 	for d in dropped {
 		delete(d.id, allocator)

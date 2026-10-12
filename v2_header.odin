@@ -22,7 +22,9 @@ Tag_Flag :: enum u8 {
 // The flags set in an ID3v2 tag header.
 Tag_Flags :: bit_set[Tag_Flag;u8]
 
-// An ID3v2 tag. Free it with destroy.
+// An ID3v2 tag. Free it with destroy. The setters, set_encoding, convert and sync_v1 allocate with
+// its allocator: the one it was read or cloned with, else the context allocator at its first
+// change.
 Tag :: struct {
 	version:   V2_Version,
 	revision:  u8,

@@ -82,7 +82,7 @@ The repository root is the `odid3` package. Colophon imports it by path; the rec
 | `deflate.odin` | The deflate encoder for compressed frames (see [Decisions](#decisions)). |
 | `tests/` | The `odid3_tests` package: tests through the public API. |
 | `testdata/` | Fixtures, the script that makes them, and ffprobe's output for each one. |
-| `docs/api.md` | The public API as designed, until `odin doc` replaces it. |
+| `docs/api.md` | A pointer to `odin doc`: the API reference is the doc comments. |
 | `cmd/odid3/` | v2 only: the command line tool. |
 
 Add a file only when a real boundary appears, never upfront. Throwaway experiments live in `spikes/`, ignored locally through `.git/info/exclude`, never committed.

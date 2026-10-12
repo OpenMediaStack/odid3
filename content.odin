@@ -55,7 +55,9 @@ Comment :: struct {
 	text:        string,
 }
 
-// APIC, or PIC in ID3v2.2.
+// APIC, or PIC in ID3v2.2. One that decode_frame or front_cover returns owns its strings and data:
+// free it with destroy. set_picture copies it, and gives it the version's default encoding when
+// its own cannot hold the description.
 Picture :: struct {
 	encoding:    Encoding,
 	mime:        string, // as stored; ID3v2.2's "JPG" and "PNG" read as "image/jpeg" and "image/png"
