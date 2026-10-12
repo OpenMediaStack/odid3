@@ -2,6 +2,7 @@ package odid3
 
 import "base:runtime"
 import "core:strings"
+import "core:unicode/utf8"
 
 // The content of a frame, decoded. Everything in it is allocated with the allocator given to
 // decode_frame; free it with destroy and that allocator.
@@ -825,4 +826,248 @@ v22_image_format :: proc(mime: string) -> string {
 		return mime
 	}
 	return ""
+}
+
+// Re-encodes the text of a frame, or of every frame of a tag that holds text, chapters included.
+// Text the encoding cannot hold gives .Not_Encodable and changes nothing, an encoding the version
+// lacks .Encoding_Not_In_Version. A frame already in the encoding is left as it is. Text that would
+// not survive (characters after a comment's end, UTF-16 that is not valid) gives .Bad_Content
+// rather than being changed; before ID3v2.4, several values are joined with "/".
+set_encoding :: proc {
+	set_frame_encoding,
+	set_tag_encoding,
+}
+
+// See set_encoding; version is the version of the frame's tag. A frame whose data is not its
+// content gives .Not_Decodable, as does one whose layout odid3 does not decode (SYLT, GEOB, USER,
+// OWNE, COMR, IPLS). The new data is allocated with the frame's allocator.
+set_frame_encoding :: proc(frame: ^Frame, version: V2_Version, encoding: Encoding) -> Error {
+	if !encoding_holds(encoding, version) {
+		return .Encoding_Not_In_Version
+	}
+	replacement, changed, undecoded := reencoded(frame, version, encoding) or_return
+	if undecoded {
+		return .Not_Decodable
+	}
+	if changed {
+		destroy_frame(frame)
+		frame^ = replacement
+	}
+	return nil
+}
+
+// See set_encoding. Every frame changes, or none; the frames set_frame_encoding refuses as
+// .Not_Decodable, empty ones and those with an unknown encoding byte are left as they are.
+set_tag_encoding :: proc(tag: ^Tag, encoding: Encoding) -> Error {
+	adopt_context_allocator(tag)
+	if tag.version == .None {
+		return .No_Version
+	}
+	if !encoding_holds(encoding, tag.version) {
+		return .Encoding_Not_In_Version
+	}
+	replacements := make([dynamic]Frame, len(tag.frames), tag.allocator) or_return
+	defer {
+		for &r in replacements {
+			destroy_frame(&r)
+		}
+		delete(replacements)
+	}
+	changed := reencode_frames(tag.frames[:], tag.version, encoding, replacements[:]) or_return
+	if !changed {
+		return nil
+	}
+	for &r, i in replacements {
+		if r.id != "" {
+			destroy_frame(&tag.frames[i])
+			tag.frames[i] = r
+			r = {}
+		}
+	}
+	return nil
+}
+
+// Fills replacements (as long as frames) with the frames whose encoding changes, CHAP and CTOC
+// with their frames inside; a frame that stays has no replacement. Nothing in frames changes.
+@(private)
+reencode_frames :: proc(
+	frames: []Frame,
+	version: V2_Version,
+	encoding: Encoding,
+	replacements: []Frame,
+) -> (
+	changed: bool,
+	err: Error,
+) {
+	for &f, i in frames {
+		replacement: Frame
+		frame_changed: bool
+		if f.id == "CHAP" || f.id == "CTOC" {
+			replacement, frame_changed = reencoded_chapter(&f, version, encoding) or_return
+		} else {
+			replacement, frame_changed, _ = reencoded(&f, version, encoding) or_return
+		}
+		if frame_changed {
+			replacements[i] = replacement
+			changed = true
+		}
+	}
+	return
+}
+
+// A chapter whose frames inside change encoding, encoded again.
+@(private)
+reencoded_chapter :: proc(
+	f: ^Frame,
+	version: V2_Version,
+	encoding: Encoding,
+) -> (
+	replacement: Frame,
+	changed: bool,
+	err: Error,
+) {
+	if is_stored(f) || f.problem == .Nested_Chapter {
+		return {}, false, nil
+	}
+	content := decode_frame(f, version, f.allocator) or_return
+	defer destroy_content(&content, f.allocator)
+	frames: ^[dynamic]Frame
+	#partial switch &c in content {
+	case Chapter:
+		frames = &c.frames
+	case Table_Of_Contents:
+		frames = &c.frames
+	case:
+		return {}, false, nil
+	}
+	inner := make([]Frame, len(frames), f.allocator) or_return
+	defer {
+		for &r in inner {
+			destroy_frame(&r)
+		}
+		delete(inner, f.allocator)
+	}
+	if !(reencode_frames(frames[:], version, encoding, inner) or_return) {
+		return {}, false, nil
+	}
+	for &r, i in inner {
+		if r.id != "" {
+			destroy_frame(&frames[i])
+			frames[i] = r
+			r = {}
+		}
+	}
+	replacement = encode_frame(content, f.id, version, f.allocator) or_return
+	keep_identity(&replacement, f)
+	return replacement, true, nil
+}
+
+// A rewritten frame keeps what makes it the frame it was: its flags, group, and where it was read.
+@(private)
+keep_identity :: proc(replacement, f: ^Frame) {
+	replacement.status = f.status
+	replacement.format = f.format
+	replacement.group = f.group
+	replacement.method = f.method
+	replacement.offset = f.offset
+	replacement.size = f.size
+	replacement.stored_flags = f.stored_flags
+}
+
+// The frame with its text in another encoding. changed is false for a frame without text, an
+// empty one, one with an unknown encoding byte, one whose data is not its content, and one
+// already in the encoding; undecoded tells set_frame_encoding about a frame with text odid3 does
+// not decode.
+@(private)
+reencoded :: proc(
+	f: ^Frame,
+	version: V2_Version,
+	encoding: Encoding,
+) -> (
+	replacement: Frame,
+	changed, undecoded: bool,
+	err: Error,
+) {
+	if !has_encoding_byte(f.id) || len(f.data) == 0 || f.data[0] == u8(encoding) {
+		return
+	}
+	if is_stored(f) || f.problem == .Skipped_Picture {
+		return {}, false, true, nil
+	}
+	if _, known := encoding_of(f.data[0]); !known {
+		return
+	}
+	// Read as ID3v2.4 reads it, so that values after the first are not lost before ID3v2.4.
+	content := decode_frame(f, .V2_4, f.allocator) or_return
+	defer destroy_content(&content, f.allocator)
+	if !text_survives(f, &content) {
+		return {}, false, false, .Bad_Content
+	}
+	switch &c in content {
+	case Text:
+		if len(c.values) > 1 && version != .V2_4 {
+			join_values(&c.values, f.id == "TCON" || f.id == "TCO", f.allocator) or_return
+		}
+		c.encoding = encoding
+	case User_Text:
+		if len(c.values) > 1 && version != .V2_4 {
+			join_values(&c.values, false, f.allocator) or_return
+		}
+		c.encoding = encoding
+	case User_Url:
+		c.encoding = encoding
+	case Comment:
+		c.encoding = encoding
+	case Picture:
+		c.encoding = encoding
+	case Url, Unique_File_Id, Popularimeter, Play_Counter, Private, Chapter, Table_Of_Contents:
+		return
+	case Binary:
+		return {}, false, true, nil
+	}
+	replacement = encode_frame(content, f.id, version, f.allocator) or_return
+	keep_identity(&replacement, f)
+	return replacement, true, false, nil
+}
+
+// Whether a frame's text decoded whole: a comment's text ends with the frame or a final
+// terminator, and UTF-16 held no unpaired surrogate (which decodes as U+FFFD).
+@(private)
+text_survives :: proc(f: ^Frame, content: ^Frame_Content) -> bool {
+	encoding, _ := encoding_of(f.data[0])
+	utf16 := encoding == .UTF16 || encoding == .UTF16BE
+	whole :: proc(utf16: bool, values: ..string) -> bool {
+		for value in values {
+			if utf16 && strings.contains_rune(value, utf8.RUNE_ERROR) {
+				return false
+			}
+		}
+		return true
+	}
+	switch c in content {
+	case Text:
+		return whole(utf16, ..c.values)
+	case User_Text:
+		return whole(utf16, c.description) && whole(utf16, ..c.values)
+	case User_Url:
+		return whole(utf16, c.description)
+	case Picture:
+		return whole(utf16, c.description)
+	case Comment:
+		if !whole(utf16, c.description, c.text) {
+			return false
+		}
+		_, rest, _ := split_terminated(encoding, f.data[4:])
+		_, after, terminated := split_terminated(encoding, rest)
+		return !terminated || len(after) == 0
+	case Url,
+	     Unique_File_Id,
+	     Popularimeter,
+	     Play_Counter,
+	     Private,
+	     Chapter,
+	     Table_Of_Contents,
+	     Binary:
+	}
+	return true
 }
