@@ -635,3 +635,346 @@ append_clone :: proc(
 	}
 	return nil
 }
+
+// Sets a field of a tag: the frame that holds it is replaced, or added. An empty value removes it.
+// A new frame takes its version's default encoding (UTF-8 in ID3v2.4; before, Latin-1 when the text
+// fits, else UTF-16); an existing frame keeps its own when it can hold the value. The date is split
+// into TYER, TDAT and TIME before ID3v2.4; setting the comment also removes ffmpeg's TXXX comment.
+set :: proc(tag: ^Tag, field: Field, value: string) -> Error {
+	adopt_context_allocator(tag)
+	if tag.version == .None {
+		return .No_Version
+	}
+	switch field {
+	case .Title, .Artist, .Album_Artist, .Album:
+		return set_text(tag, field_ids(field), value)
+	case .Date:
+		return set_date(tag, value)
+	case .Track, .Track_Total, .Disc, .Disc_Total:
+		ids := TRACK_IDS if field == .Track || field == .Track_Total else DISC_IDS
+		current := first_text(tag, ids, tag.allocator) or_return
+		defer delete(current, tag.allocator)
+		number, total := split_pair(current)
+		if field == .Track || field == .Disc {
+			number = strings.trim_space(value)
+		} else {
+			total = strings.trim_space(value)
+		}
+		return set_pair(tag, ids, number, total)
+	case .Genre:
+		if value == "" {
+			return set_genres(tag, nil)
+		}
+		return set_genres(tag, {value})
+	case .Comment:
+		remove_user_text(tag, "comment")
+		return set_comment(tag, value)
+	}
+	return nil
+}
+
+// Sets the track number and total; 0 leaves a part out, and both 0 remove the frame.
+set_track :: proc(tag: ^Tag, number, total: int) -> Error {
+	return set_number_pair(tag, TRACK_IDS, number, total)
+}
+
+// Sets the disc number and total; 0 leaves a part out, and both 0 remove the frame.
+set_disc :: proc(tag: ^Tag, number, total: int) -> Error {
+	return set_number_pair(tag, DISC_IDS, number, total)
+}
+
+// Sets the genres: several values in ID3v2.4, joined with "/" before. No genre removes the frame.
+set_genres :: proc(tag: ^Tag, genres: []string) -> Error {
+	adopt_context_allocator(tag)
+	if tag.version == .None {
+		return .No_Version
+	}
+	return set_text_values(tag, GENRE_IDS, genres)
+}
+
+// Replaces the pictures of the same type with picture, or adds it. Its data is copied.
+set_picture :: proc(tag: ^Tag, picture: Picture) -> Error {
+	adopt_context_allocator(tag)
+	if tag.version == .None {
+		return .No_Version
+	}
+	id := "PIC" if tag.version == .V2_2 else "APIC"
+	p := picture
+	if !encoding_holds(p.encoding, tag.version, p.description) {
+		p.encoding = default_encoding(tag.version, p.description)
+	}
+	frame := encode_frame(p, id, tag.version, tag.allocator) or_return
+	remove_pictures(tag, picture.type)
+	if err := add_frame(tag, frame); err != nil {
+		destroy_frame(&frame)
+		return err
+	}
+	return nil
+}
+
+// Removes the pictures of a type, or every picture when type is nil.
+remove_pictures :: proc(tag: ^Tag, type: Maybe(Picture_Type) = nil) {
+	wanted, only_one_type := type.?
+	for i := len(tag.frames) - 1; i >= 0; i -= 1 {
+		f := &tag.frames[i]
+		if f.id != "APIC" && f.id != "PIC" {
+			continue
+		}
+		if only_one_type {
+			content, err := decode_frame(f, tag.version, tag.allocator)
+			picture, is_picture := content.(Picture)
+			matches := err == nil && is_picture && picture.type == wanted
+			destroy_content(&content, tag.allocator)
+			if !matches {
+				continue
+			}
+		}
+		remove_frame(tag, i)
+	}
+}
+
+// Sets the value of the TXXX frame with this description (ignoring case), or adds one. An empty
+// value removes it.
+set_user_text :: proc(tag: ^Tag, description, value: string) -> Error {
+	adopt_context_allocator(tag)
+	if tag.version == .None {
+		return .No_Version
+	}
+	index := remove_user_text(tag, description)
+	if value == "" {
+		return nil
+	}
+	encoding := default_encoding(tag.version, description, value)
+	content := User_Text {
+		encoding    = encoding,
+		description = description,
+		values      = {value},
+	}
+	frame := encode_frame(
+		content,
+		"TXX" if tag.version == .V2_2 else "TXXX",
+		tag.version,
+		tag.allocator,
+	) or_return
+	return insert_frame(tag, index, frame)
+}
+
+// Sets the COMM frame with this description and language, or adds one. Empty text removes it.
+set_comment :: proc(tag: ^Tag, text: string, description := "", language := "eng") -> Error {
+	adopt_context_allocator(tag)
+	if tag.version == .None {
+		return .No_Version
+	}
+	lang: [3]u8
+	copy(lang[:], language)
+	index := -1
+	for i := len(tag.frames) - 1; i >= 0; i -= 1 {
+		f := &tag.frames[i]
+		if f.id != "COMM" && f.id != "COM" {
+			continue
+		}
+		content, err := decode_frame(f, tag.version, tag.allocator)
+		comment, is_comment := content.(Comment)
+		matches :=
+			err == nil &&
+			is_comment &&
+			comment.description == description &&
+			comment.language == lang
+		destroy_content(&content, tag.allocator)
+		if matches {
+			remove_frame(tag, i)
+			index = i
+		}
+	}
+	if text == "" {
+		return nil
+	}
+	content := Comment {
+		encoding    = default_encoding(tag.version, description, text),
+		language    = lang,
+		description = description,
+		text        = text,
+	}
+	frame := encode_frame(
+		content,
+		"COM" if tag.version == .V2_2 else "COMM",
+		tag.version,
+		tag.allocator,
+	) or_return
+	return insert_frame(tag, index, frame)
+}
+
+@(private)
+field_ids :: proc(field: Field) -> []string {
+	#partial switch field {
+	case .Title:
+		return TITLE_IDS
+	case .Artist:
+		return ARTIST_IDS
+	case .Album_Artist:
+		return ALBUM_ARTIST_IDS
+	case .Album:
+		return ALBUM_IDS
+	}
+	return nil
+}
+
+// The ID a version uses among a field's IDs: the 4 letter one, or the 3 letter one in ID3v2.2.
+@(private)
+version_id :: proc(ids: []string, version: V2_Version) -> string {
+	for id in ids {
+		if (len(id) == 3) == (version == .V2_2) {
+			return id
+		}
+	}
+	return ids[0]
+}
+
+@(private)
+set_text :: proc(tag: ^Tag, ids: []string, value: string) -> Error {
+	if value == "" {
+		return set_text_values(tag, ids, nil)
+	}
+	return set_text_values(tag, ids, {value})
+}
+
+// Replaces the first frame with one of ids by a text frame holding values, removing the others;
+// no values removes them all. The frame keeps its place, flags and encoding when it can.
+@(private)
+set_text_values :: proc(tag: ^Tag, ids: []string, values: []string) -> Error {
+	index := -1
+	encoding: Maybe(Encoding)
+	status: Frame_Status
+	for i := len(tag.frames) - 1; i >= 0; i -= 1 {
+		f := &tag.frames[i]
+		if !contains(ids, f.id) {
+			continue
+		}
+		content, err := decode_frame(f, tag.version, tag.allocator)
+		if text, ok := content.(Text); err == nil && ok {
+			encoding = text.encoding
+		}
+		destroy_content(&content, tag.allocator)
+		status = f.status
+		remove_frame(tag, i)
+		index = i
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	chosen, has_encoding := encoding.?
+	if !has_encoding || !encoding_holds(chosen, tag.version, ..values) {
+		chosen = default_encoding(tag.version, ..values)
+	}
+	frame := encode_frame(
+		Text{chosen, values},
+		version_id(ids, tag.version),
+		tag.version,
+		tag.allocator,
+	) or_return
+	frame.status = status
+	return insert_frame(tag, index, frame)
+}
+
+// Inserts a frame where an old one was (index -1: at the end); the tag takes ownership.
+@(private)
+insert_frame :: proc(tag: ^Tag, index: int, frame: Frame) -> Error {
+	frame := frame
+	if tag.frames.allocator.procedure == nil {
+		tag.frames.allocator = tag.allocator
+	}
+	err: runtime.Allocator_Error
+	if index < 0 || index >= len(tag.frames) {
+		_, err = append(&tag.frames, frame)
+	} else {
+		_, err = inject_at(&tag.frames, index, frame)
+	}
+	if err != nil {
+		destroy_frame(&frame)
+	}
+	return err
+}
+
+// Removes the TXXX frames with this description and returns where the first one was, -1 if none.
+@(private)
+remove_user_text :: proc(tag: ^Tag, description: string) -> (index: int) {
+	index = -1
+	for i := len(tag.frames) - 1; i >= 0; i -= 1 {
+		f := &tag.frames[i]
+		if f.id != "TXXX" && f.id != "TXX" {
+			continue
+		}
+		content, err := decode_frame(f, tag.version, tag.allocator)
+		text, ok := content.(User_Text)
+		matches := err == nil && ok && strings.equal_fold(text.description, description)
+		destroy_content(&content, tag.allocator)
+		if matches {
+			remove_frame(tag, i)
+			index = i
+		}
+	}
+	return
+}
+
+@(private)
+set_pair :: proc(tag: ^Tag, ids: []string, number, total: string) -> Error {
+	switch {
+	case number == "" && total == "":
+		return set_text_values(tag, ids, nil)
+	case total == "":
+		return set_text(tag, ids, number)
+	}
+	pair := strings.concatenate({number, "/", total}, tag.allocator) or_return
+	defer delete(pair, tag.allocator)
+	return set_text(tag, ids, pair)
+}
+
+@(private)
+set_number_pair :: proc(tag: ^Tag, ids: []string, number, total: int) -> Error {
+	adopt_context_allocator(tag)
+	if tag.version == .None {
+		return .No_Version
+	}
+	a, b: [20]u8
+	n := strconv.write_int(a[:], i64(number), 10) if number > 0 else ""
+	t := strconv.write_int(b[:], i64(total), 10) if total > 0 else ""
+	return set_pair(tag, ids, n, t)
+}
+
+// "2019-05-03T10:20" is TDRC in ID3v2.4; before, TYER "2019", TDAT "0305" (day then month) and
+// TIME "1020", or TYE, TDA and TIM in ID3v2.2.
+@(private)
+set_date :: proc(tag: ^Tag, value: string) -> Error {
+	if tag.version == .V2_4 {
+		set_text_values(tag, {"TYER", "TDAT", "TIME"}, nil) or_return
+		return set_text(tag, {"TDRC"}, value)
+	}
+	set_text_values(tag, {"TDRC"}, nil) or_return
+	v22 := tag.version == .V2_2
+	year, day_month, hours: string
+	if len(value) >= 4 {
+		year = value[:4]
+	}
+	if len(value) >= 10 && value[4] == '-' && value[7] == '-' {
+		day_month = strings.concatenate({value[8:10], value[5:7]}, tag.allocator) or_return
+	}
+	defer delete(day_month, tag.allocator)
+	if len(value) >= 16 && value[10] == 'T' && value[13] == ':' {
+		hours = strings.concatenate({value[11:13], value[14:16]}, tag.allocator) or_return
+	}
+	defer delete(hours, tag.allocator)
+	set_text(tag, {"TYE"} if v22 else {"TYER"}, year) or_return
+	set_text(tag, {"TDA"} if v22 else {"TDAT"}, day_month) or_return
+	return set_text(tag, {"TIM"} if v22 else {"TIME"}, hours)
+}
+
+// A tag made by hand has no allocator yet: it takes the context's, which then owns its frames.
+@(private)
+adopt_context_allocator :: proc(tag: ^Tag) {
+	if tag.allocator.procedure == nil {
+		tag.allocator = context.allocator
+	}
+	if tag.frames.allocator.procedure == nil {
+		tag.frames.allocator = tag.allocator
+	}
+}

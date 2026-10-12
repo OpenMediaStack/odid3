@@ -211,9 +211,9 @@ Frame_Problem :: enum u8 {
 }
 
 // Copies id and data.
-make_frame :: proc(id: string, data: []u8, allocator := context.allocator) -> (frame: Frame, err: Error)
+make_frame :: proc(id: string, data: []u8, allocator := context.allocator) -> (Frame, runtime.Allocator_Error) #optional_allocator_error
 // The tag takes ownership of frame.
-add_frame :: proc(tag: ^Tag, frame: Frame) -> Error
+add_frame :: proc(tag: ^Tag, frame: Frame) -> runtime.Allocator_Error
 remove_frame :: proc(tag: ^Tag, index: int)
 find_frame :: proc(tag: ^Tag, id: string, start := 0) -> (index: int, ok: bool)
 ```
@@ -468,7 +468,7 @@ Format_Error :: enum u8 {
 	Tag_Too_Large, // over 256 MB, the largest syncsafe size, or a frame over its version's limit
 	Bad_Frame_Id, // not 3 (ID3v2.2) or 4 (ID3v2.3, 2.4) characters from A to Z and 0 to 9
 	Encoding_Not_In_Version, // UTF-16BE or UTF-8 below ID3v2.4
-	Not_Encodable, // Latin-1 cannot hold the text
+	Not_Encodable, // the chosen encoding cannot hold the text (Latin-1 holds 256 characters)
 	Not_In_Version, // a frame flag or a write option the version does not have
 	Not_Decodable, // decode_frame on an encrypted, damaged or skipped frame
 	Bad_Content, // frame bytes that do not follow the frame's layout
