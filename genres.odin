@@ -2,7 +2,8 @@ package odid3
 
 import "core:strings"
 
-// The ID3v1 genres: 0 to 79 from the ID3v1 spec, then Winamp's extensions, as other tools read them.
+// The ID3v1 genres: 0 to 79 from the ID3v1 spec, then Winamp's extensions, spelled as ffmpeg spells
+// them.
 @(private, rodata)
 GENRES := [?]string {
 	"Blues",
@@ -72,7 +73,7 @@ GENRES := [?]string {
 	"Native American",
 	"Cabaret",
 	"New Wave",
-	"Psychadelic",
+	"Psychedelic",
 	"Rave",
 	"Showtunes",
 	"Trailer",
@@ -85,13 +86,12 @@ GENRES := [?]string {
 	"Musical",
 	"Rock & Roll",
 	"Hard Rock",
-	// From 80 on: Winamp's extensions.
 	"Folk",
 	"Folk-Rock",
 	"National Folk",
 	"Swing",
 	"Fast Fusion",
-	"Bebob",
+	"Bebop",
 	"Latin",
 	"Revival",
 	"Celtic",
@@ -129,7 +129,7 @@ GENRES := [?]string {
 	"Duet",
 	"Punk Rock",
 	"Drum Solo",
-	"A capella",
+	"A Cappella",
 	"Euro-House",
 	"Dance Hall",
 	"Goa",
@@ -210,12 +210,24 @@ genre_name :: proc(index: u8) -> string {
 	return GENRES[index]
 }
 
+// Winamp's own spellings of three genres, which other tools corrected.
+@(private, rodata)
+GENRE_ALIASES := [?]struct {
+	name:  string,
+	index: u8,
+}{{"Psychadelic", 67}, {"Bebob", 85}, {"A capella", 123}}
+
 // The ID3v1 genre number of a name, ignoring case and surrounding spaces.
 genre_index :: proc(name: string) -> (index: u8, ok: bool) {
 	trimmed := strings.trim_space(name)
 	for genre, i in GENRES {
 		if strings.equal_fold(genre, trimmed) {
 			return u8(i), true
+		}
+	}
+	for alias in GENRE_ALIASES {
+		if strings.equal_fold(alias.name, trimmed) {
+			return alias.index, true
 		}
 	}
 	return 0, false

@@ -26,7 +26,7 @@ V1_Tag :: struct {
 }
 
 // The Enhanced TAG ("TAG+"), which some players write before ID3v1. Its title, artist and album
-// continue those of ID3v1.
+// continue those of ID3v1; its strings are freed with the V1_Tag that holds it.
 V1_Enhanced :: struct {
 	speed:      u8, // 0 unset, 1 slow, 2 medium, 3 fast, 4 hardcore
 	genre:      string, // free text
@@ -121,14 +121,37 @@ decode_v1_long_text :: proc(
 }
 
 // ID3v1 text is Latin-1 by the spec, but some taggers (ffmpeg among them) write UTF-8: valid UTF-8
-// with bytes above 0x7F is read as UTF-8, anything else as Latin-1.
+// with bytes above 0x7F is read as UTF-8, anything else as Latin-1. Those taggers cut at 30 bytes,
+// sometimes inside a character: when only that last character is broken and what comes before is
+// UTF-8 with bytes above 0x7F, the broken character is dropped.
 @(private)
 decode_v1_text :: proc(field: []u8, allocator: runtime.Allocator) -> (s: string, err: Error) {
 	text := strings.trim_right(string(cut_at_nul(field)), " ")
-	if !is_ascii(text) && utf8.valid_string(text) {
-		return strings.clone(text, allocator)
+	if !is_ascii(text) {
+		if utf8.valid_string(text) {
+			return strings.clone(text, allocator)
+		}
+		before_cut := without_cut_character(text)
+		if !is_ascii(before_cut) && utf8.valid_string(before_cut) {
+			return strings.clone(before_cut, allocator)
+		}
 	}
 	return decode_latin1(transmute([]u8)text, allocator)
+}
+
+// text without the start of a UTF-8 character it ends with, if it ends with one.
+@(private)
+without_cut_character :: proc(text: string) -> string {
+	for back in 1 ..= min(3, len(text)) {
+		start := len(text) - back
+		if utf8.rune_start(text[start]) {
+			if text[start] >= 0xC0 && !utf8.full_rune_in_string(text[start:]) {
+				return text[:start]
+			}
+			break
+		}
+	}
+	return text
 }
 
 @(private)

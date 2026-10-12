@@ -134,3 +134,7 @@ failing_allocator_proc :: proc(
 	}
 	return f.backing.procedure(f.backing.data, mode, size, alignment, old_memory, old_size, loc)
 }
+
+text :: proc(s: string) -> []u8 {
+	return transmute([]u8)s
+}
