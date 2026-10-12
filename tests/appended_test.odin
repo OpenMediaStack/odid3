@@ -42,10 +42,7 @@ appended_tag_and_ape_in_either_order :: proc(t: ^testing.T) {
 	appended := tag_with_footer(frame(4, "TIT2", text("\x03Appended")))
 	ape := ape_tag(40, true)
 	audio := zeros(300)
-	for data in ([][]u8 {
-			concat(audio, appended, ape, v1_tag()),
-			concat(audio, ape, appended, v1_tag()),
-		}) {
+	for data in ([][]u8{concat(audio, appended, ape, v1_tag()), concat(audio, ape, appended, v1_tag())}) {
 		tags := read(t, data)
 		defer odid3.destroy(&tags)
 		testing.expect_value(t, tags.layout.v2_appended.size, i64(len(appended)))
@@ -94,10 +91,7 @@ appended_tag_and_lyrics3_in_either_order :: proc(t: ^testing.T) {
 	appended := tag_with_footer(frame(4, "TIT2", text("\x03Appended")))
 	lyrics := lyrics3_v2("Some lyrics")
 	audio := zeros(300)
-	for data in ([][]u8 {
-			concat(audio, appended, lyrics, v1_tag()),
-			concat(audio, lyrics, appended),
-		}) {
+	for data in ([][]u8{concat(audio, appended, lyrics, v1_tag()), concat(audio, lyrics, appended)}) {
 		tags := read(t, data)
 		defer odid3.destroy(&tags)
 		testing.expect_value(t, tags.layout.v2_appended.size, i64(len(appended)))
