@@ -66,6 +66,7 @@ The repository root is the `odid3` package. Colophon imports it by path; the rec
 | `odid3.odin` | Package documentation: what the library does, ownership and threading rules. |
 | `errors.odin` | `Error`, `Format_Error`, `Warning`. |
 | `layout.odin` | Finding where each part of a file is: the leading ID3v2 tag, an appended ID3v2.4 tag, the audio, APE and Lyrics3 tags, the Enhanced TAG, ID3v1. |
+| `read.odin` | `Tags`, `read_bytes`, `read_file` and `destroy`. |
 | `source.odin` | Reading bytes at an offset from memory or from an open file, so the same code reads both without loading a whole file. |
 | `v1.odin` | ID3v1, ID3v1.1 and the Enhanced TAG, reading and writing. |
 | `genres.odin` | The ID3v1 genre table and `TCON` genre references. |
