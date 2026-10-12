@@ -552,24 +552,39 @@ decode_table_of_contents :: proc(
 	toc.ordered = rest[0] & 0x01 != 0
 	count := int(rest[1])
 	rest = rest[2:]
-	defer if err != nil {
+	err = decode_children(&toc, id, count, &rest, allocator)
+	if err == nil {
+		toc.frames, toc.warnings, err = read_embedded_frames(rest, frame, version, allocator)
+	}
+	if err != nil {
 		content := Frame_Content(toc)
 		destroy_content(&content, allocator)
-		toc = {}
+		return {}, err
 	}
+	return toc, nil
+}
+
+// The element ID of a table and the IDs of its children, each ended by a NUL.
+@(private)
+decode_children :: proc(
+	toc: ^Table_Of_Contents,
+	id: []u8,
+	count: int,
+	rest: ^[]u8,
+	allocator: runtime.Allocator,
+) -> Error {
 	toc.element_id = decode_latin1(id, allocator) or_return
 	toc.children = make([]string, count, allocator) or_return
 	for &child in toc.children {
 		text: []u8
-		child_terminated: bool
-		text, rest, child_terminated = split_terminated(.Latin1, rest)
-		if !child_terminated {
-			return toc, .Bad_Content
+		terminated: bool
+		text, rest^, terminated = split_terminated(.Latin1, rest^)
+		if !terminated {
+			return .Bad_Content
 		}
 		child = decode_latin1(text, allocator) or_return
 	}
-	toc.frames, toc.warnings = read_embedded_frames(rest, frame, version, allocator) or_return
-	return
+	return nil
 }
 
 @(private)

@@ -1,6 +1,7 @@
 package odid3
 
 import "base:runtime"
+import "core:mem"
 import "core:strconv"
 import "core:strings"
 
@@ -23,9 +24,10 @@ Field :: enum u8 {
 Fields :: bit_set[Field;u16]
 
 // The value of a field, allocated with allocator; "" when absent or undecodable. Several values
-// (ID3v2.4 allows them) are joined with "; ". On Tags, a field the ID3v2 tag lacks comes from ID3v1.
-// The comment is the first COMM frame without a description, else the first one that is not one of
-// iTunes' own (described "iTun..."), else a TXXX frame described "comment", as ffmpeg writes it.
+// (ID3v2.4 allows them) are joined with "; ". On Tags, a field the ID3v2 tag lacks comes from
+// ID3v1. The comment is the first COMM frame without a description, else the first one that is
+// not one of iTunes' own (described "iTun..."), else a TXXX frame described "comment", as ffmpeg
+// writes it.
 get :: proc {
 	get_tag_field,
 	get_file_field,
@@ -107,28 +109,72 @@ get_file_field :: proc(
 	return
 }
 
-// The year of the date, 0 and false when there is none.
-year :: proc(tag: ^Tag) -> (year: int, ok: bool) {
-	date := tag_date(tag, context.allocator) or_else ""
-	defer delete(date)
-	if len(date) < 4 {
-		return 0, false
-	}
-	return parse_number(date[:4])
+// The year of the date, false when there is none. On Tags, ID3v1's year when the ID3v2 tag has
+// none. Allocates nothing.
+year :: proc {
+	tag_year,
+	file_year,
 }
 
-// The track number and total, 0 when absent or not a number.
-track :: proc(tag: ^Tag) -> (number, total: int) {
+// See year.
+tag_year :: proc(tag: ^Tag) -> (year: int, ok: bool) {
+	buf: [SCRATCH_SIZE]u8
+	scratch: mem.Arena
+	mem.arena_init(&scratch, buf[:])
+	date, _ := tag_date(tag, mem.arena_allocator(&scratch))
+	return parse_year(date)
+}
+
+// See year.
+file_year :: proc(tags: ^Tags) -> (year: int, ok: bool) {
+	year, ok = tag_year(&tags.v2)
+	if !ok && tags.v1.version != .None {
+		return parse_year(tags.v1.year)
+	}
+	return
+}
+
+// The track number and total, 0 when absent or not a number. On Tags, ID3v1.1's track when the
+// ID3v2 tag has none. Allocates nothing.
+track :: proc {
+	tag_track,
+	file_track,
+}
+
+// See track.
+tag_track :: proc(tag: ^Tag) -> (number, total: int) {
 	return number_pair(tag, TRACK_IDS)
 }
 
-// The disc number and total, 0 when absent or not a number.
-disc :: proc(tag: ^Tag) -> (number, total: int) {
+// See track.
+file_track :: proc(tags: ^Tags) -> (number, total: int) {
+	number, total = tag_track(&tags.v2)
+	if number == 0 && total == 0 && tags.v1.version != .None {
+		number = int(tags.v1.track)
+	}
+	return
+}
+
+// The disc number and total, 0 when absent or not a number. ID3v1 has no disc, so on Tags it is
+// the ID3v2 tag's. Allocates nothing.
+disc :: proc {
+	tag_disc,
+	file_disc,
+}
+
+// See disc.
+tag_disc :: proc(tag: ^Tag) -> (number, total: int) {
 	return number_pair(tag, DISC_IDS)
 }
 
-// The genres, ID3v1 references ("(17)", "17", "(RX)", "(CR)") resolved to names, a refinement
-// ("(4)Eurodisco") taking the place of the references it refines. Free with destroy.
+// See disc.
+file_disc :: proc(tags: ^Tags) -> (number, total: int) {
+	return tag_disc(&tags.v2)
+}
+
+// The genres, ID3v1 references ("(17)", "17", "(RX)", "(CR)") resolved to names, followed by the
+// text that refines them unless it repeats one ("(4)Eurodisco" gives Disco and Eurodisco), as
+// mutagen reads them. Free with destroy.
 genres :: proc(
 	tag: ^Tag,
 	allocator := context.allocator,
@@ -149,7 +195,7 @@ genres :: proc(
 	return out[:], nil
 }
 
-// Every picture (APIC, PIC). Free with destroy.
+// Every picture (APIC, PIC). Free with destroy. Tags read with skip_picture_data have none.
 pictures :: proc(
 	tag: ^Tag,
 	allocator := context.allocator,
@@ -179,53 +225,69 @@ pictures :: proc(
 	return out[:], nil
 }
 
-// The front cover, else the first picture. ok is false when there is none, or no memory for it.
-// Free with destroy.
-front_cover :: proc(tag: ^Tag, allocator := context.allocator) -> (picture: Picture, ok: bool) {
-	all, err := pictures(tag, allocator)
-	if err != nil || len(all) == 0 {
-		return {}, false
-	}
-	defer destroy_pictures(&all, allocator)
-	chosen := 0
-	for p, i in all {
-		if p.type == .Front_Cover {
-			chosen = i
-			break
+// The front cover, else the first picture; found is false when there is none. Only the picture
+// returned stays in memory. Free it with destroy. Tags read with skip_picture_data have none.
+front_cover :: proc(
+	tag: ^Tag,
+	allocator := context.allocator,
+) -> (
+	picture: Picture,
+	found: bool,
+	err: runtime.Allocator_Error,
+) {
+	for &f in tag.frames {
+		if f.id != "APIC" && f.id != "PIC" {
+			continue
+		}
+		content, decode_err := decode_owned(&f, tag.version, allocator)
+		if decode_err != nil {
+			destroy_picture(&picture, allocator)
+			return {}, false, decode_err
+		}
+		p, is_picture := content.(Picture)
+		switch {
+		case !is_picture:
+			destroy_content(&content, allocator)
+		case p.type == .Front_Cover:
+			destroy_picture(&picture, allocator)
+			return p, true, nil
+		case found:
+			destroy_content(&content, allocator)
+		case:
+			picture, found = p, true
 		}
 	}
-	picture = all[chosen]
-	all[chosen] = {}
-	return picture, true
+	return
 }
 
-// The value of the first TXXX frame with this description (ignoring case). ok is false when there
-// is none, or no memory for it.
+// The values of the first TXXX frame with this description (ignoring case), joined with "; ";
+// found is false when there is none. Free the value with delete.
 user_text :: proc(
 	tag: ^Tag,
 	description: string,
 	allocator := context.allocator,
 ) -> (
 	value: string,
-	ok: bool,
+	found: bool,
+	err: runtime.Allocator_Error,
 ) {
 	for &f in tag.frames {
 		if f.id != "TXXX" && f.id != "TXX" {
 			continue
 		}
-		content, err := decode_frame(&f, tag.version, allocator)
+		content := decode_owned(&f, tag.version, allocator) or_return
+		defer destroy_content(&content, allocator)
 		text, is_user_text := content.(User_Text)
-		if err == nil && is_user_text && strings.equal_fold(text.description, description) {
-			joined, join_err := strings.join(text.values, "; ", allocator)
-			destroy_content(&content, allocator)
-			return joined, join_err == nil
+		if is_user_text && strings.equal_fold(text.description, description) {
+			value = strings.join(text.values, "; ", allocator) or_return
+			return value, true, nil
 		}
-		destroy_content(&content, allocator)
 	}
-	return "", false
+	return "", false, nil
 }
 
-// Every COMM frame, and USLT lyrics are not among them. Free with destroy.
+// Every comment frame (COMM, or COM in ID3v2.2); lyrics (USLT) are not comments. Free with
+// destroy.
 comments :: proc(
 	tag: ^Tag,
 	allocator := context.allocator,
@@ -367,7 +429,9 @@ contains :: proc(list: []string, s: string) -> bool {
 }
 
 // ID3v2.4 has one timestamp, TDRC. Before it the date was split in TYER ("2019"), TDAT ("0305",
-// day then month) and TIME ("1020"); ID3v2.2 calls them TYE, TDA and TIM.
+// day then month) and TIME ("1020"); ID3v2.2 calls them TYE, TDA and TIM. As ffmpeg does, the day
+// and the time only count after a year of 4 digits, and only when they are 4 digits that can be a
+// date or a time.
 @(private)
 tag_date :: proc(
 	tag: ^Tag,
@@ -381,30 +445,49 @@ tag_date :: proc(
 		return timestamp, nil
 	}
 	year := first_text(tag, {"TYER", "TYE"}, allocator) or_return
-	defer delete(year, allocator)
-	if year == "" {
-		return "", nil
+	if len(year) != 4 || !is_number(year) {
+		return year, nil
 	}
+	defer delete(year, allocator)
 	day_month := first_text(tag, {"TDAT", "TDA"}, allocator) or_return
 	defer delete(day_month, allocator)
 	hours := first_text(tag, {"TIME", "TIM"}, allocator) or_return
 	defer delete(hours, allocator)
-	b := strings.builder_make(allocator) or_return
-	strings.write_string(&b, year)
-	if len(day_month) == 4 && is_number(day_month) {
-		strings.write_byte(&b, '-')
-		strings.write_string(&b, day_month[2:4])
-		strings.write_byte(&b, '-')
-		strings.write_string(&b, day_month[0:2])
-		if len(hours) == 4 && is_number(hours) {
-			strings.write_byte(&b, 'T')
-			strings.write_string(&b, hours[0:2])
-			strings.write_byte(&b, ':')
-			strings.write_string(&b, hours[2:4])
-		}
+	if !is_pair_within(day_month, 31, 12, 1) {
+		return strings.clone(year, allocator)
 	}
-	return strings.to_string(b), nil
+	day, month := day_month[0:2], day_month[2:4]
+	if !is_pair_within(hours, 23, 59, 0) {
+		return strings.concatenate({year, "-", month, "-", day}, allocator)
+	}
+	return strings.concatenate(
+		{year, "-", month, "-", day, "T", hours[0:2], ":", hours[2:4]},
+		allocator,
+	)
 }
+
+// Whether s is 4 digits, a first pair from lowest to first and a second from lowest to second.
+@(private)
+is_pair_within :: proc(s: string, first, second, lowest: int) -> bool {
+	if len(s) != 4 || !is_number(s) {
+		return false
+	}
+	a, _ := parse_number(s[0:2])
+	b, _ := parse_number(s[2:4])
+	return a >= lowest && a <= first && b >= lowest && b <= second
+}
+
+@(private)
+parse_year :: proc(date: string) -> (year: int, ok: bool) {
+	if len(date) < 4 {
+		return 0, false
+	}
+	return parse_number(date[:4])
+}
+
+// What year, track and disc decode fits on the stack: a value too long for it is no number anyway.
+@(private)
+SCRATCH_SIZE :: 1024
 
 @(private)
 tag_comment :: proc(
@@ -429,7 +512,7 @@ tag_comment :: proc(
 	if chosen >= 0 {
 		return strings.clone(all[chosen].text, allocator)
 	}
-	value, _ = user_text(tag, "comment", allocator)
+	value, _ = user_text(tag, "comment", allocator) or_return
 	return value, nil
 }
 
@@ -445,8 +528,10 @@ split_pair :: proc(s: string) -> (number, total: string) {
 
 @(private)
 number_pair :: proc(tag: ^Tag, ids: []string) -> (number, total: int) {
-	pair := first_text(tag, ids, context.allocator) or_else ""
-	defer delete(pair)
+	buf: [SCRATCH_SIZE]u8
+	scratch: mem.Arena
+	mem.arena_init(&scratch, buf[:])
+	pair, _ := first_text(tag, ids, mem.arena_allocator(&scratch))
 	a, b := split_pair(pair)
 	number, _ = parse_number(a)
 	total, _ = parse_number(b)
@@ -510,11 +595,14 @@ resolve_genre :: proc(
 	if strings.has_prefix(refinement, "((") {
 		refinement = refinement[1:]
 	}
-	if refinement != "" {
-		return append_clone(out, refinement, allocator)
-	}
 	for name in names {
 		append_clone(out, name, allocator) or_return
+		if strings.equal_fold(name, refinement) {
+			refinement = ""
+		}
+	}
+	if refinement != "" {
+		append_clone(out, refinement, allocator) or_return
 	}
 	return nil
 }
