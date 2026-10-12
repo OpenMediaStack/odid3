@@ -6,8 +6,19 @@ import "core:os"
 // What can stop a procedure of this package. A damaged tag is not an error: reading returns what
 // it could read, with Warnings.
 Error :: union #shared_nil {
+	Format_Error,
 	os.Error, // opening or reading a file
 	runtime.Allocator_Error,
+}
+
+// What the data asked for cannot give.
+Format_Error :: enum u8 {
+	None,
+	// decode_frame on a frame whose data is not its content: encrypted, badly compressed, skipped,
+	// or shorter than its flags announce.
+	Not_Decodable,
+	// Frame data that does not follow the layout of its frame.
+	Bad_Content,
 }
 
 // What reading found wrong in a file. The result holds what could be read despite it.

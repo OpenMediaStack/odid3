@@ -92,6 +92,7 @@ destroy :: proc {
 	destroy_tag,
 	destroy_frame,
 	destroy_v1,
+	destroy_content,
 }
 
 // Frees what read_bytes or read_file allocated in tags and resets it.
