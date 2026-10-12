@@ -37,7 +37,8 @@ MAX_TAG_SIZE :: 1 << 28 - 1
 // compressed frames are written back as stored. A frame read from a file keeps its text encoding
 // even when its version lacks it (some taggers wrote UTF-8 in ID3v2.3); a new frame must use one
 // the version has. The header keeps the revision and the experimental flag; the extended header is
-// not written.
+// not written, nor ID3v2.4's SEEK, whose offset to a next tag no longer holds once the tag is
+// rewritten.
 render :: proc(
 	tag: ^Tag,
 	options := Write_Options{},
@@ -81,15 +82,22 @@ render :: proc(
 	if unsync && tag.version != .V2_4 {
 		body = &whole
 	}
-	every_frame_unsync := tag.version == .V2_4 && len(tag.frames) > 0
+	rendered, unsynchronised := 0, 0
 	for &f in tag.frames {
+		if f.id == "SEEK" && tag.version == .V2_4 {
+			continue
+		}
 		render_frame(body, &f, tag.version, forced) or_return
-		every_frame_unsync &&= frame_unsynchronised(&f)
+		rendered += 1
+		if frame_unsynchronised(&f) {
+			unsynchronised += 1
+		}
 		framed := len(body) if body == &whole else len(body) - V2_HEADER_SIZE
 		if framed > MAX_TAG_SIZE {
 			return nil, .Tag_Too_Large
 		}
 	}
+	every_frame_unsync := tag.version == .V2_4 && rendered > 0 && unsynchronised == rendered
 	padding := 0 if footer else options.padding.? or_else DEFAULT_PADDING
 	if padding < 0 {
 		padding = 0

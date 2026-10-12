@@ -20,6 +20,8 @@ Drop_Reason :: enum u8 {
 	No_Equivalent,
 	// Encrypted, or compressed in a way that cannot be carried without its key or sizes.
 	Encrypted,
+	// In a group of frames (the grouping flag), which ID3v2.2 has no room for.
+	Grouped,
 	// A frame odid3 does not know, which asks to be dropped when its tag changes.
 	Discard_On_Tag_Alter,
 	// Text in an encoding the target version does not have, in a frame odid3 cannot re-encode.
@@ -27,7 +29,8 @@ Drop_Reason :: enum u8 {
 	// The tag was converted to .None.
 	Tag_Removed,
 	// Converted, but part of its value has no place in the target version: a date's seconds or a
-	// month without its day in ID3v2.3, values after the first.
+	// month without its day in ID3v2.3, values after the first, the group of a frame merged into
+	// a frame of another group.
 	Partly_Converted,
 }
 
@@ -83,7 +86,7 @@ clone_frame :: proc(f: ^Frame, allocator: runtime.Allocator) -> (duplicate: Fram
 // TORY into TDOR, IPLS into TIPL, and back; ID3v2.2's 3 letter IDs to 4 letters and back, PIC
 // into APIC), converts the frames inside chapters, re-encodes text the target cannot hold, joins
 // several values with "/" before ID3v2.4, and removes the frames it cannot carry; ID3v2.2 frames
-// have no flags, so they lose theirs. It returns, in their order, the frames it removed and those
+// have no flags, so encrypted and grouped frames are removed and the others lose theirs. It returns, in their order, the frames it removed and those
 // whose value it could only carry in part, each with the reason. From .None it only sets the
 // version; to .None it removes every frame. Tags whose frames were not all read (a compressed
 // ID3v2.2 tag, pictures skipped when they need a new layout) give .Incomplete_Tag. On an error
@@ -187,15 +190,28 @@ convert_frames :: proc(
 			drop(tag, i, .Not_Encodable, dropped, allocator) or_return
 		}
 	}
-	if to == .V2_4 {
-		// ID3v2.4 gives the size before compression in the data length indicator.
-		for &f in tag.frames {
-			if .Compression in f.format && f.data_length >= 0 {
-				f.format += {.Data_Length_Indicator}
-			}
+	for &f in tag.frames {
+		if to != .V2_4 {
+			f.format -= {.Data_Length_Indicator}
+		} else if .Compression in f.format && f.data_length >= 0 {
+			// ID3v2.4 gives the size before compression in the data length indicator.
+			f.format += {.Data_Length_Indicator}
 		}
 	}
 	return nil
+}
+
+// A frame rebuilt by a conversion keeps the group and the compression of the frame it replaces.
+@(private)
+carry_format :: proc(replacement, f: ^Frame) {
+	replacement.format += f.format & {.Grouping, .Compression}
+	replacement.group = f.group
+}
+
+@(private)
+same_group :: proc(a, b: ^Frame) -> bool {
+	grouped := .Grouping in a.format
+	return grouped == (.Grouping in b.format) && (!grouped || a.group == b.group)
 }
 
 // The frames inside a CHAP or CTOC are laid out in their tag's version: they are converted with
@@ -231,8 +247,7 @@ convert_chapter :: proc(
 	}
 	replacement := encode_frame(content, f.id, to, tag.allocator) or_return
 	replacement.status = f.status
-	replacement.format = f.format & {.Grouping}
-	replacement.group = f.group
+	carry_format(&replacement, f)
 	destroy_frame(f)
 	f^ = replacement
 	return nil
@@ -371,6 +386,7 @@ convert_original_year :: proc(
 		return drop(tag, at, .Not_Encodable, dropped, allocator)
 	}
 	frame := text_frame(tag, target, {carried}, format_of(&tag.frames[at])) or_return
+	carry_format(&frame, &tag.frames[at])
 	replace_frame(tag, at, {frame}) or_return
 	if several || len(carried) < len(value) {
 		note(dropped, source, .Partly_Converted, allocator) or_return
@@ -411,6 +427,9 @@ convert_people :: proc(
 			previous = format_of(f)
 			i += 1
 		case:
+			if !same_group(f, &tag.frames[at]) {
+				note(dropped, f.id, .Partly_Converted, allocator) or_return
+			}
 			remove_frame(tag, i)
 		}
 	}
@@ -434,6 +453,7 @@ convert_people :: proc(
 		tag.allocator,
 	) or_return
 	frame.status = format.status
+	carry_format(&frame, &tag.frames[at])
 	return replace_frame(tag, at, {frame})
 }
 
@@ -512,6 +532,8 @@ convert_to_v22 :: proc(
 			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
 		case is_stored(f) || .Encryption in f.format:
 			drop(tag, i, .Encrypted, dropped, allocator) or_return
+		case .Grouping in f.format:
+			drop(tag, i, .Grouped, dropped, allocator) or_return
 		case id == "":
 			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
 		case f.id == "APIC" && !(change_picture_layout(tag, i, .V2_3, .V2_2) or_return):
@@ -839,10 +861,22 @@ conversion_drop :: proc(f: ^Frame, from, to: V2_Version) -> (reason: Drop_Reason
 	if .Discard_On_Tag_Alter in f.status && !contains(KNOWN_FRAMES, f.id) {
 		return .Discard_On_Tag_Alter, true
 	}
+	// A frame shorter than the bytes its flags announce would have other bytes taken for them in
+	// another version's layout.
+	if f.problem == .Too_Short {
+		return .No_Equivalent, true
+	}
+	as_stored := is_stored(f)
 	// Before ID3v2.4, a compressed frame states its decompressed size, which an encrypted or
 	// badly compressed frame from ID3v2.4 may not have given.
-	as_stored := is_stored(f) && f.problem != .Too_Short
-	if as_stored && .Compression in f.format && f.data_length < 0 {
+	lacks_size := .Compression in f.format && f.data_length < 0
+	// ID3v2.3 has no room for the data length indicator of an encrypted frame that is not
+	// compressed, which its method may need.
+	loses_indicator :=
+		to == .V2_3 && .Compression not_in f.format && .Data_Length_Indicator in f.format
+	// ID3v2.4's data length indicator is syncsafe, so it holds less than ID3v2.3's size.
+	too_large := to == .V2_4 && f.data_length > MAX_TAG_SIZE
+	if as_stored && (lacks_size || loses_indicator || too_large) {
 		return .Encrypted, true
 	}
 	// The frames inside a chapter are laid out in the source version: one that cannot be decoded
@@ -952,7 +986,13 @@ date_to_v24 :: proc(
 	if several {
 		note(dropped, "TYER", .Partly_Converted, allocator) or_return
 	}
+	for k in 2 ..= 3 {
+		if used[k] && !same_group(&tag.frames[first[k]], &tag.frames[first[1]]) {
+			note(dropped, ids[k], .Partly_Converted, allocator) or_return
+		}
+	}
 	frame := text_frame(tag, "TDRC", {value}, format_of(&tag.frames[first[1]])) or_return
+	carry_format(&frame, &tag.frames[first[1]])
 	return replace_date_parts(tag, &remove, {frame})
 }
 
@@ -1019,6 +1059,7 @@ date_to_v23 :: proc(
 			}
 			return err
 		}
+		carry_format(&frame, &tag.frames[first[0]])
 		frames[n] = frame
 		n += 1
 	}
@@ -1095,8 +1136,7 @@ convert_text :: proc(tag: ^Tag, index: int) -> (ok: bool, err: Error) {
 	}
 	replacement := encode_frame(content, f.id, tag.version, tag.allocator) or_return
 	replacement.status = f.status
-	replacement.format = f.format & {.Grouping}
-	replacement.group = f.group
+	carry_format(&replacement, f)
 	destroy_frame(f)
 	f^ = replacement
 	return true, nil

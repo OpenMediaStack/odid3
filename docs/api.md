@@ -420,6 +420,7 @@ Dropped_Frame :: struct {
 Drop_Reason :: enum u8 {
 	No_Equivalent, // RVA2 in ID3v2.3, RVAD in ID3v2.4, CHAP in ID3v2.2...
 	Encrypted, // cannot be converted without its key or sizes
+	Grouped, // in a group of frames, which ID3v2.2 has no room for
 	Discard_On_Tag_Alter, // an unknown frame that asks to be dropped when its tag changes
 	Not_Encodable, // text in an encoding the target lacks, in a frame odid3 cannot re-encode
 	Tag_Removed, // converted to .None
@@ -458,7 +459,7 @@ write_bytes :: proc(file: []u8, tags: ^Tags, options := Write_Options{}, allocat
 write_file :: proc(path: string, tags: ^Tags, options := Write_Options{}, allocator := context.allocator) -> Error
 ```
 
-A tag is written in its own version (`tags.v2.version`), and ID3v1 in `tags.v1.version`: `.None` removes them. The version of each frame's flags and sizes follows the tag.
+A tag is written in its own version (`tags.v2.version`), and ID3v1 in `tags.v1.version`: `.None` removes them. The version of each frame's flags and sizes follows the tag. ID3v2.4's `SEEK` frame is not written: its offset to a next tag no longer holds once the tag is rewritten.
 
 Unsynchronisation inserts a `0x00` after every `0xFF` that a byte of `0xE0` or more (or `0x00`) follows, so that old players never mistake tag bytes for an MPEG frame sync. Before ID3v2.4 it covers the whole tag, frame headers included; in ID3v2.4 it covers each frame on its own, after the frame header. With `Write_Options.unsynchronisation`, every frame is unsynchronised; without it, an ID3v2.4 frame whose format holds `.Unsynchronisation` still is, and the tag header says so when every frame is.
 
