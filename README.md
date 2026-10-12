@@ -9,7 +9,7 @@ An ID3 library for [Odin](https://odin-lang.org), part of Open Media Stack. It r
 ## What v1 will do
 
 - **Read** every version, with the four text encodings, extended headers, unsynchronisation (whole tag or per frame), the data length indicator, grouping, footers, appended ID3v2.4 tags, compressed frames, encrypted frames kept as they are, and chapters (`CHAP`, `CTOC`).
-- **Keep every frame.** A tag is a list of frames with their flags and bytes, unknown ones included, so a round trip loses nothing.
+- **Keep every frame.** A tag is a list of frames with their flags and bytes, unknown ones included, so a round trip loses nothing but ID3v2.4's `SEEK`, whose offset to a next tag no longer holds once the tag is rewritten.
 - **Typed accessors** for the common fields: title, artist, album artist, album, date, track and total, disc and total, genre (with ID3v1 genre references), comment, pictures, user text.
 - **A raw frame view**: each frame's ID, offset in the file, size, flags and decoded value.
 - **Write** every version, with options for the text encoding of each frame, the padding, unsynchronisation and compression, and convert between versions with a list of what a conversion drops.

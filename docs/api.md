@@ -459,7 +459,7 @@ write_bytes :: proc(file: []u8, tags: ^Tags, options := Write_Options{}, allocat
 write_file :: proc(path: string, tags: ^Tags, options := Write_Options{}, allocator := context.allocator) -> Error
 ```
 
-A tag is written in its own version (`tags.v2.version`), and ID3v1 in `tags.v1.version`: `.None` removes them. The version of each frame's flags and sizes follows the tag.
+A tag is written in its own version (`tags.v2.version`), and ID3v1 in `tags.v1.version`: `.None` removes them. The version of each frame's flags and sizes follows the tag. ID3v2.4's `SEEK` frame is not written: its offset to a next tag no longer holds once the tag is rewritten.
 
 Unsynchronisation inserts a `0x00` after every `0xFF` that a byte of `0xE0` or more (or `0x00`) follows, so that old players never mistake tag bytes for an MPEG frame sync. Before ID3v2.4 it covers the whole tag, frame headers included; in ID3v2.4 it covers each frame on its own, after the frame header. With `Write_Options.unsynchronisation`, every frame is unsynchronised; without it, an ID3v2.4 frame whose format holds `.Unsynchronisation` still is, and the tag header says so when every frame is.
 

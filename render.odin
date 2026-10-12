@@ -37,7 +37,8 @@ MAX_TAG_SIZE :: 1 << 28 - 1
 // compressed frames are written back as stored. A frame read from a file keeps its text encoding
 // even when its version lacks it (some taggers wrote UTF-8 in ID3v2.3); a new frame must use one
 // the version has. The header keeps the revision and the experimental flag; the extended header is
-// not written, nor SEEK, whose offset to a next tag no longer holds once the tag is rewritten.
+// not written, nor ID3v2.4's SEEK, whose offset to a next tag no longer holds once the tag is
+// rewritten.
 render :: proc(
 	tag: ^Tag,
 	options := Write_Options{},
@@ -83,7 +84,7 @@ render :: proc(
 	}
 	rendered, unsynchronised := 0, 0
 	for &f in tag.frames {
-		if f.id == "SEEK" {
+		if f.id == "SEEK" && tag.version == .V2_4 {
 			continue
 		}
 		render_frame(body, &f, tag.version, forced) or_return
@@ -212,11 +213,11 @@ render_frame :: proc(
 	}
 	if compress {
 		format += {.Compression}
-	}
-	// ID3v2.4 gives the size before compression in the data length indicator, which a compressed
-	// frame must have; a frame from ID3v2.3 written as stored has it as its decompressed size.
-	if version == .V2_4 && .Compression in format && (!as_stored || f.data_length >= 0) {
-		format += {.Data_Length_Indicator}
+		// ID3v2.4 gives the size before compression in the data length indicator, which a
+		// compressed frame must have.
+		if version == .V2_4 {
+			format += {.Data_Length_Indicator}
+		}
 	}
 	if version != .V2_4 {
 		format -= {.Data_Length_Indicator}
