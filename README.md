@@ -31,6 +31,8 @@ odinfmt -path:. -w
 
 `odinfmt` comes with [OLS](https://github.com/DanielGavin/ols); the CI builds it from the commit pinned in `.github/workflows/ci.yml`.
 
+`ols.json` makes OLS check the package and its tests with the CI's `-vet -strict-style` flags. OLS formats with odinfmt and the repository's `odinfmt.json` on its own.
+
 How the project is run, its conventions and its roadmap are in [AGENTS.md](AGENTS.md).
 
 ## License

@@ -1,0 +1,12 @@
+{
+	"$schema": "https://raw.githubusercontent.com/DanielGavin/ols/master/misc/ols.schema.json",
+	"enable_snippets": true,
+	"checker_args": "-vet -strict-style",
+	"profile": "default",
+	"profiles": [
+		{
+			"name": "default",
+			"checker_path": [".", "tests"]
+		}
+	]
+}
