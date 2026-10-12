@@ -511,7 +511,7 @@ frames_v22_cannot_hold :: proc(t: ^testing.T) {
 	frames := concat(
 		frame(4, "PRIV", text("owner\x00data")),
 		frame(4, "TIT2", text("\x03Title")),
-		frame(4, "PCNT", {0, 0, 0, 1}, 0, 0x40),
+		frame(4, "PCNT", {0, 0, 0, 4, 0, 0, 0, 1}, 0x10, 0x01),
 		frame(4, "TPE1", concat({0x80}, text("secret")), 0, 0x04),
 	)
 	tags := read(t, tag_file(4, 0, frames))

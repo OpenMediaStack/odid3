@@ -20,6 +20,8 @@ Drop_Reason :: enum u8 {
 	No_Equivalent,
 	// Encrypted, or compressed in a way that cannot be carried without its key or sizes.
 	Encrypted,
+	// In a group of frames (the grouping flag), which ID3v2.2 has no room for.
+	Grouped,
 	// A frame odid3 does not know, which asks to be dropped when its tag changes.
 	Discard_On_Tag_Alter,
 	// Text in an encoding the target version does not have, in a frame odid3 cannot re-encode.
@@ -512,6 +514,8 @@ convert_to_v22 :: proc(
 			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
 		case is_stored(f) || .Encryption in f.format:
 			drop(tag, i, .Encrypted, dropped, allocator) or_return
+		case .Grouping in f.format:
+			drop(tag, i, .Grouped, dropped, allocator) or_return
 		case id == "":
 			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
 		case f.id == "APIC" && !(change_picture_layout(tag, i, .V2_3, .V2_2) or_return):
