@@ -215,7 +215,22 @@ genre_name :: proc(index: u8) -> string {
 GENRE_ALIASES := [?]struct {
 	name:  string,
 	index: u8,
-}{{"Psychadelic", 67}, {"Bebob", 85}, {"A capella", 123}}
+} {
+	{"Psychadelic", 67},
+	{"Bebob", 85},
+	{"A capella", 123},
+	// mutagen's spellings
+	{"Alt. Rock", 40},
+	{"Gangsta Rap", 59},
+	{"Fast-Fusion", 84},
+	{"Hardcore", 129},
+	{"Afro-Punk", 133},
+	// common free text
+	{"Alternative Rock", 40},
+	{"Hip Hop", 7},
+	{"Jazz-Funk", 29},
+	{"Jazz Funk", 29},
+}
 
 // The ID3v1 genre number of a name, ignoring case and surrounding spaces.
 genre_index :: proc(name: string) -> (index: u8, ok: bool) {

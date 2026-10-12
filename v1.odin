@@ -11,7 +11,8 @@ V1_Version :: enum u8 {
 	V1_1,
 }
 
-// An ID3v1 tag: the last 128 bytes of a file, its text decoded to UTF-8. Free it with destroy.
+// An ID3v1 tag: the last 128 bytes of a file, its text decoded to UTF-8. Free it with destroy. A
+// tag built by hand sets genre to 255 for none: 0 is Blues.
 V1_Tag :: struct {
 	version:   V1_Version,
 	title:     string, // 30 characters, 90 with the Enhanced TAG
@@ -191,8 +192,9 @@ V1_Policy :: enum u8 {
 	Never,
 }
 
-// The ID3v1 bytes of a tag: 128 bytes, or 355 when it holds an Enhanced TAG, which comes first.
-// Text is written in Latin-1, a character outside it as '?', cut to its field.
+// The ID3v1 bytes of a tag: 128 bytes, or 355 when it holds an Enhanced TAG, which comes first;
+// nil when its version is .None. Text is written in Latin-1, a character outside it as '?', cut to
+// its field. An ID3v1.1 tag without a track is the same bytes as ID3v1.0 and is written as such.
 render_v1 :: proc(
 	v1: ^V1_Tag,
 	allocator := context.allocator,
@@ -200,6 +202,9 @@ render_v1 :: proc(
 	bytes: []u8,
 	err: runtime.Allocator_Error,
 ) #optional_allocator_error {
+	if v1.version == .None {
+		return nil, nil
+	}
 	enhanced, has_enhanced := v1.enhanced.?
 	size := V1_SIZE + (V1_ENHANCED_SIZE if has_enhanced else 0)
 	bytes = make([]u8, size, allocator) or_return
@@ -209,7 +214,7 @@ render_v1 :: proc(
 	put_latin1(tag[33:63], v1.artist)
 	put_latin1(tag[63:93], v1.album)
 	put_latin1(tag[93:97], v1.year)
-	if v1.version == .V1_1 {
+	if v1.version == .V1_1 && v1.track != 0 {
 		put_latin1(tag[97:125], v1.comment)
 		tag[126] = v1.track
 	} else {
@@ -230,11 +235,12 @@ render_v1 :: proc(
 	return bytes, nil
 }
 
-// An ID3v1 tag holding the values of an ID3v2 tag, and the fields that do not fit: text longer than
-// its field (30 characters, 28 for the comment of ID3v1.1, 90 with the Enhanced TAG), characters
-// outside Latin-1, a date that is more than a year, a track that is not a number from 1 to 255, a
-// genre missing from the ID3v1 table (unless the Enhanced TAG holds it). Fields ID3v1 has no room for
-// at all (album artist, totals, disc) are not reported. Free the tag with destroy.
+// An ID3v1 tag holding the values of an ID3v2 tag, and the fields that do not fit: text longer
+// than its field (30 characters, 28 for the comment of ID3v1.1, 90 with the Enhanced TAG),
+// characters outside Latin-1, a date that is more than a year, a track in ID3v1.0 or one that is
+// not a number from 1 to 255, more than one genre, a genre missing from the ID3v1 table (unless the
+// Enhanced TAG holds it). Fields ID3v1 has no room for at all (album artist, totals, disc) are not
+// reported. ID3v1.1 without a track becomes ID3v1.0, the same bytes. Free the tag with destroy.
 v1_from_tag :: proc(
 	tag: ^Tag,
 	version: V1_Version,
@@ -251,8 +257,8 @@ v1_from_tag :: proc(
 	return v1_from_tags(&tags, version, enhanced, allocator)
 }
 
-// Like v1_from_tag, from the fields of a file: those of its ID3v2 tag, else those of its ID3v1 tag,
-// whose genre number and Enhanced TAG details are kept.
+// Like v1_from_tag, from the fields of a file as get shows them: those of its ID3v2 tag, else those
+// of its ID3v1 tag, whose year, genre number and Enhanced TAG details are kept.
 @(private)
 v1_from_tags :: proc(
 	tags: ^Tags,
@@ -275,12 +281,24 @@ v1_from_tags :: proc(
 	defer if err != nil {
 		destroy_v1(&v1)
 	}
+	track_text := get_file_field(tags, .Track, allocator) or_return
+	defer delete(track_text, allocator)
+	number, _ := parse_number(track_text)
+	if version == .V1_1 && number >= 1 && number <= 255 {
+		v1.track = u8(number)
+	} else if track_text != "" {
+		overflow += {.Track}
+	}
+	if v1.track == 0 {
+		v1.version = .V1_0
+	}
+
 	long := 90 if enhanced else 30
 	v1.title = get_file_field(tags, .Title, allocator) or_return
 	v1.artist = get_file_field(tags, .Artist, allocator) or_return
 	v1.album = get_file_field(tags, .Album, allocator) or_return
 	v1.comment = get_file_field(tags, .Comment, allocator) or_return
-	comment_limit := 28 if version == .V1_1 else 30
+	comment_limit := 28 if v1.version == .V1_1 else 30
 	texts := [?]struct {
 		field: Field,
 		value: string,
@@ -297,22 +315,16 @@ v1_from_tags :: proc(
 		}
 	}
 
-	date := get_file_field(tags, .Date, allocator) or_return
+	date := get_tag_field(&tags.v2, .Date, allocator) or_return
 	defer delete(date, allocator)
-	if len(date) >= 4 && is_number(date[:4]) {
+	switch {
+	case date == "" && tags.v1.version != .None:
+		v1.year = strings.clone(tags.v1.year, allocator) or_return
+	case len(date) >= 4 && is_number(date[:4]):
 		v1.year = strings.clone(date[:4], allocator) or_return
 	}
-	if date != v1.year {
+	if date != "" && date != v1.year {
 		overflow += {.Date}
-	}
-
-	track_text := get_file_field(tags, .Track, allocator) or_return
-	defer delete(track_text, allocator)
-	number, _ := parse_number(track_text)
-	if version == .V1_1 && number >= 1 && number <= 255 {
-		v1.track = u8(number)
-	} else if track_text != "" {
-		overflow += {.Track}
 	}
 
 	e: V1_Enhanced
@@ -323,30 +335,39 @@ v1_from_tags :: proc(
 		e.end_time = strings.clone(old.end_time, allocator) or_return
 		v1.enhanced = e
 	}
+	// The genre text: ID3v2's first genre, else the Enhanced TAG's, which refines ID3v1's number.
 	names := genres(&tags.v2, allocator) or_return
 	defer destroy_strings(&names, allocator)
+	genre_text := ""
 	if len(names) > 0 {
-		index, known := genre_index(names[0])
-		if known {
-			v1.genre = index
-		} else if enhanced && fits_latin1(names[0], 30) {
-			e.genre = strings.clone(names[0], allocator) or_return
-			v1.enhanced = e
-		} else {
-			overflow += {.Genre}
-		}
+		genre_text = names[0]
 		if len(names) > 1 {
 			overflow += {.Genre}
 		}
 	} else if tags.v1.version != .None {
 		v1.genre = tags.v1.genre
-		if old, ok := tags.v1.enhanced.?; ok && enhanced {
-			e.genre = strings.clone(old.genre, allocator) or_return
+		if old, ok := tags.v1.enhanced.?; ok {
+			genre_text = old.genre
+		}
+	}
+	if genre_text != "" {
+		index, known := genre_index(genre_text)
+		if known && (len(names) > 0 || v1.genre == 255) {
+			v1.genre = index
+		}
+		switch {
+		case v1.genre != 255 && strings.equal_fold(genre_name(v1.genre), genre_text):
+		case enhanced && fits_latin1(genre_text, 30):
+			e.genre = strings.clone(genre_text, allocator) or_return
 			v1.enhanced = e
+		case:
+			overflow += {.Genre}
 		}
 	}
 	needs_enhanced :=
-		!fits_latin1(v1.title, 30) || !fits_latin1(v1.artist, 30) || !fits_latin1(v1.album, 30)
+		utf8.rune_count_in_string(v1.title) > 30 ||
+		utf8.rune_count_in_string(v1.artist) > 30 ||
+		utf8.rune_count_in_string(v1.album) > 30
 	if !enhanced {
 		if e, ok := &v1.enhanced.?; ok {
 			destroy_v1_enhanced(e, allocator)
@@ -358,9 +379,11 @@ v1_from_tags :: proc(
 	return
 }
 
-// Rebuilds tags.v1 from the file's fields (ID3v2, else ID3v1) following the policy, and returns the
-// fields that do not fit (see v1_from_tag). A nil version means ID3v1.1 when the track is a number from 1 to 255, else ID3v1.0.
-// A nil enhanced keeps the Enhanced TAG when the file has one.
+// Rebuilds tags.v1 following the policy from the file's fields as get shows them (ID3v2, else
+// ID3v1), and returns the fields that do not fit (see v1_from_tag). A field the ID3v2 tag lacks
+// keeps its ID3v1 value: to clear a field from both, clear it in tags.v1 too. A nil version means
+// ID3v1.1 when the track is a number from 1 to 255, else ID3v1.0; a nil enhanced keeps the Enhanced
+// TAG when the file has one. The new tag uses the allocator the tags were read with.
 sync_v1 :: proc(
 	tags: ^Tags,
 	policy: V1_Policy,
