@@ -37,3 +37,23 @@ undo_unsynchronisation_takes_out_the_zero_after_each_0xFF :: proc(t: ^testing.T)
 		)
 	}
 }
+
+@(test)
+unsynchronised_parts_are_one_stream :: proc(t: ^testing.T) {
+	cases := []struct {
+		parts: [][]u8,
+		want:  []u8,
+	} {
+		{{{0xFF}, {0x03}}, {0xFF, 0x03}},
+		{{{0xFF}, {}, {0xE0}}, {0xFF, 0x00, 0xE0}},
+		{{{0x01}, {0xFF}}, {0x01, 0xFF, 0x00}},
+		{{{0xFF, 0x00}, {}}, {0xFF, 0x00, 0x00}},
+	}
+	for c in cases {
+		out: [dynamic]u8
+		defer delete(out)
+		testing.expect_value(t, unsynchronise(&out, ..c.parts), nil)
+		testing.expectf(t, string(out[:]) == string(c.want), "%v gave %v", c.parts, out[:])
+		testing.expect_value(t, unsynchronised_size(..c.parts), len(c.want))
+	}
+}

@@ -1,10 +1,15 @@
 package odid3
 
-// How to write a tag. The tag header's flags come from these options, not from the flags read.
+// How to write a tag. The tag header's flags come from these options and from the frames; of the
+// flags read, only the experimental one is kept.
 Write_Options :: struct {
-	padding:           Maybe(int), // zeros after the frames; nil means DEFAULT_PADDING, below 0 none
-	footer:            bool, // ID3v2.4 only; the spec forbids padding with a footer, so there is none
-	unsynchronisation: bool, // the whole tag; ID3v2.4 frames can also ask for it one by one
+	// Zeros after the frames; nil means DEFAULT_PADDING, below 0 none.
+	padding:           Maybe(int),
+	// ID3v2.4 only; the spec forbids padding with a footer, so there is none.
+	footer:            bool,
+	// The whole tag; ID3v2.4 frames can also ask for it one by one. ffmpeg misreads the frames of
+	// ID3v2.2 and 2.3 tags written so, after the first byte unsynchronisation inserts.
+	unsynchronisation: bool,
 	// Allow rewriting a file whose tag was read with damage warnings (see write_file), and
 	// rendering a tag whose frames could not be read at all (a compressed ID3v2.2 tag).
 	replace_damaged:   bool,
@@ -21,8 +26,9 @@ MAX_TAG_SIZE :: 1 << 28 - 1
 // allocator and owned by the caller, who frees them with delete. Each frame keeps its status and
 // format flags and the bytes they need, so a frame read from a file comes out byte for byte, but
 // for what the version writes its own way: syncsafe sizes in ID3v2.4 (where old iTunes wrote plain
-// ones), reserved flag bits cleared, and compression and unsynchronisation as the write options
-// say. Encrypted and badly compressed frames are written back as stored. A frame read from a file
+// ones), reserved flag bits cleared, and unsynchronisation as the write options and the ID3v2.4
+// frames ask, the size limit applying to the tag as written. Encrypted and badly compressed frames
+// are written back as stored. A frame read from a file
 // keeps its text encoding even when its version lacks it (some taggers wrote UTF-8 in ID3v2.3); a
 // new frame must use one the version has. The header keeps the revision and the experimental flag;
 // the extended header is not written.
@@ -66,7 +72,8 @@ render :: proc(
 	for &f in tag.frames {
 		render_frame(body, &f, tag.version, unsync) or_return
 		every_frame_unsync &&= frame_unsynchronised(&f)
-		if len(body) > V2_HEADER_SIZE + MAX_TAG_SIZE {
+		framed := len(body) if body == &whole else len(body) - V2_HEADER_SIZE
+		if framed > MAX_TAG_SIZE {
 			return nil, .Tag_Too_Large
 		}
 	}
@@ -80,6 +87,9 @@ render :: proc(
 	}
 	resize(body, len(body) + padding) or_return
 	if body == &whole {
+		if unsynchronised_size(whole[:]) > MAX_TAG_SIZE {
+			return nil, .Tag_Too_Large
+		}
 		unsynchronise(&out, whole[:]) or_return
 	}
 	size := len(out) - V2_HEADER_SIZE
@@ -225,8 +235,11 @@ render_frame :: proc(
 	stored.allocator = out.allocator
 	defer delete(stored)
 	if unsync {
-		unsynchronise(&stored, extras[:n]) or_return
-		unsynchronise(&stored, f.data) or_return
+		// The bytes the flags add and the data are one stream.
+		if unsynchronised_size(extras[:n], f.data) > MAX_TAG_SIZE {
+			return .Tag_Too_Large
+		}
+		unsynchronise(&stored, extras[:n], f.data) or_return
 		n = 0
 		payload = stored[:]
 	}

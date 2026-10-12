@@ -1,6 +1,7 @@
 package odid3_tests
 
 import "core:bytes"
+import "core:mem"
 import "core:testing"
 
 import odid3 "../"
@@ -17,7 +18,17 @@ expect_no_false_sync :: proc(t: ^testing.T, name: string, b: []u8, loc := #calle
 
 @(test)
 unsynchronisation_option_in_each_version :: proc(t: ^testing.T) {
-	for name in ([]string{"v22_pic.mp3", "v23_unicode.mp3", "v23_cover.mp3", "v24_unicode.mp3", "v24_full.mp3"}) {
+	cases := []string {
+		"v22_pic.mp3",
+		"v23_unicode.mp3",
+		"v23_cover.mp3",
+		"v23_chapters.mp3",
+		"v24_unicode.mp3",
+		"v24_full.mp3",
+		"v24_chapters.mp3",
+		"v24_itunes.mp3",
+	}
+	for name in cases {
 		tags := read(t, fixture(t, name))
 		defer odid3.destroy(&tags)
 		rendered, err := odid3.render(&tags.v2, {unsynchronisation = true}, context.temp_allocator)
@@ -139,4 +150,77 @@ unsynchronisation_through_write_bytes :: proc(t: ^testing.T) {
 		t,
 		bytes.equal(slice_of(out, again.layout.audio), slice_of(file, tags.layout.audio)),
 	)
+}
+
+@(test)
+unsynchronisation_inserts_where_it_must :: proc(t: ^testing.T) {
+	// ID3v2.2 holding 0xFF bytes, unsynchronised as a whole.
+	data := text("\x00\xFF\xE0\xFF")
+	v22 := read(t, tag_file(2, 0, frame22("TT2", data)))
+	defer odid3.destroy(&v22)
+	rendered, err := odid3.render(
+		&v22.v2,
+		{padding = 0, unsynchronisation = true},
+		context.temp_allocator,
+	)
+	testing.expect_value(t, err, nil)
+	body := unsynchronise(frame22("TT2", data))
+	testing.expect(t, bytes.equal(rendered, concat(v2_header(2, 0x80, len(body)), body)))
+
+	// The bytes the flags add and the data are one stream: a group byte 0xFF before a data byte
+	// below 0xE0 needs no 0x00.
+	grouped := frame(4, "TIT2", unsynchronise(text("\xFF\x03Title")), 0, 0x42)
+	tags := read(t, tag_file(4, 0, grouped))
+	defer odid3.destroy(&tags)
+	again, _ := odid3.render(&tags.v2, {padding = 0}, context.temp_allocator)
+	// Its only frame is unsynchronised, so the tag header says so.
+	testing.expect(t, bytes.equal(again, concat(v2_header(4, 0x80, len(grouped)), grouped)))
+
+	// An encrypted frame with the option reads back the same.
+	secret := text("\xFF\xE0\xFF\x00\xFF")
+	encrypted := read(t, tag_file(3, 0, frame(3, "PRIV", concat({0xFF}, secret), 0, 0x40)))
+	defer odid3.destroy(&encrypted)
+	unsynchronised, _ := odid3.render(
+		&encrypted.v2,
+		{unsynchronisation = true},
+		context.temp_allocator,
+	)
+	back := read(t, unsynchronised)
+	defer odid3.destroy(&back)
+	testing.expect_value(t, back.v2.frames[0].method, 0xFF)
+	testing.expect(t, bytes.equal(back.v2.frames[0].data, secret))
+}
+
+@(test)
+header_flag_alone_keeps_frames_unsynchronised :: proc(t: ^testing.T) {
+	stored := unsynchronise(text("\x01\xFF\xFEA\x00"))
+	data := tag_file(4, 0x80, frame(4, "TIT2", stored))
+	tags := read(t, data)
+	defer odid3.destroy(&tags)
+	testing.expect(t, .Unsynchronisation in tags.v2.frames[0].format)
+	rendered, err := odid3.render(&tags.v2, {padding = 0}, context.temp_allocator)
+	testing.expect_value(t, err, nil)
+	testing.expect_value(t, rendered[5], 0x80)
+	testing.expect(t, bytes.equal(rendered[20:], stored))
+}
+
+@(test)
+unsynchronisation_allocation_failures :: proc(t: ^testing.T) {
+	for name in ([]string{"v23_cover.mp3", "v24_unicode.mp3", "v22_pic.mp3"}) {
+		tags := read(t, fixture(t, name))
+		defer odid3.destroy(&tags)
+		succeeded := false
+		for budget in 0 ..< 32 {
+			failing := Failing{context.allocator, budget}
+			allocator := failing_allocator(&failing)
+			rendered, err := odid3.render(&tags.v2, {unsynchronisation = true}, allocator)
+			if err == nil {
+				delete(rendered, allocator)
+				succeeded = true
+				break
+			}
+			testing.expect_value(t, err, odid3.Error(mem.Allocator_Error.Out_Of_Memory))
+		}
+		testing.expectf(t, succeeded, "%s never rendered", name)
+	}
 }
