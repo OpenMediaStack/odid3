@@ -31,15 +31,17 @@ a_file_changed_during_a_write_is_noticed :: proc(t: ^testing.T) {
 		Error(.File_Changed),
 	)
 
-	// Another program replaces it.
-	other, _ := os.join_path({dir, "other.mp3"}, context.temp_allocator)
-	testing.expect_value(t, os.write_entire_file(other, []u8{1, 2, 3, 4}), nil)
-	now, _ := os.fstat(original, context.allocator)
-	os.file_info_delete(now, context.allocator)
-	testing.expect_value(t, os.rename(other, path), nil)
-	testing.expect_value(
-		t,
-		check_unchanged(original, path, now, context.allocator),
-		Error(.File_Changed),
-	)
+	// Another program replaces it, which Windows does not allow while the file is open.
+	when ODIN_OS != .Windows {
+		other, _ := os.join_path({dir, "other.mp3"}, context.temp_allocator)
+		testing.expect_value(t, os.write_entire_file(other, []u8{1, 2, 3, 4}), nil)
+		now, _ := os.fstat(original, context.allocator)
+		os.file_info_delete(now, context.allocator)
+		testing.expect_value(t, os.rename(other, path), nil)
+		testing.expect_value(
+			t,
+			check_unchanged(original, path, now, context.allocator),
+			Error(.File_Changed),
+		)
+	}
 }
