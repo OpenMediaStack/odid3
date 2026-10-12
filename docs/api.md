@@ -176,6 +176,7 @@ Frame :: struct {
 	offset:       i64, // of the frame header in the file
 	size:         int, // the size field of the frame header
 	stored_flags: [2]u8, // the flag bytes of the frame header (none in ID3v2.2)
+	allocator:    runtime.Allocator, // what id and data are allocated with
 }
 
 Frame_Status_Flag :: enum u8 {
@@ -196,6 +197,7 @@ Frame_Format :: bit_set[Frame_Format_Flag; u8]
 
 Frame_Problem :: enum u8 {
 	None,
+	Too_Short, // shorter than the bytes its format flags add: data holds the bytes as stored
 	Encrypted, // data holds the bytes as stored
 	Bad_Compression, // data holds the bytes as stored
 	Bad_Data_Length,

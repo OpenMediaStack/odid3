@@ -215,7 +215,7 @@ allocation_failures_leak_nothing :: proc(t: ^testing.T) {
 	data := fixture(t, "v1_enhanced.mp3")
 	for budget in 0 ..< 32 {
 		f := Failing{context.allocator, budget}
-		tags, err := odid3.read_bytes(data, failing_allocator(&f))
+		tags, err := odid3.read_bytes(data, {}, failing_allocator(&f))
 		if err == nil {
 			testing.expect_value(t, tags.v1.title, "A title that needs the Enhanced TAG to fit")
 			odid3.destroy(&tags)

@@ -54,3 +54,17 @@ has_magic :: proc(src: ^Source, offset: i64, magic: string) -> (found: bool, err
 	bytes := source_bytes(src, offset, buf[:len(magic)]) or_return
 	return string(bytes) == magic, nil
 }
+
+// Fills dst with the bytes at offset. Fewer bytes than asked means the file changed while it was
+// read.
+@(private)
+source_read :: proc(src: ^Source, offset: i64, dst: []u8) -> Error {
+	bytes := source_bytes(src, offset, dst) or_return
+	if len(bytes) < len(dst) {
+		return os.Error(io.Error.Unexpected_EOF)
+	}
+	if src.file == nil {
+		copy(dst, bytes)
+	}
+	return nil
+}
