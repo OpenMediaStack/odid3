@@ -18,7 +18,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-rm -f ./*.mp3 ffprobe/*.txt
+rm -f ./*.mp3 ffprobe/*.txt zlib/*
 mkdir -p ffprobe
 
 # The bitexact flags go after the input: before it, they would only apply to reading the input.
@@ -389,6 +389,77 @@ artist = b'\x03Marlowe Kite'
 frames += b'TPE1' + syncsafe(len(artist)) + b'\x00\x00' + artist
 tag = b'ID3\x04\x00\x00' + syncsafe(len(frames)) + frames
 open(sys.argv[2], 'wb').write(tag + open(sys.argv[1], 'rb').read())
+PY
+
+# v23_compressed.mp3, v24_compressed.mp3, v24_compression_bomb.mp3: compressed frames, made with
+# Python's zlib so that the reader is never tested against odid3's own encoder.
+# v23_compressed.mp3: ID3v2.3, a TIT2 frame compressed (format flag 0x80, then the decompressed size
+#   in 4 bytes, then the zlib stream) and a plain TPE1 frame.
+#   Expect: title "Compressed title, then la la la..." (repeated), artist "Marlowe Kite".
+# v24_compressed.mp3: ID3v2.4, a TIT2 frame compressed with a data length indicator (0x09), and a
+#   PRIV frame compressed then unsynchronised (0x0B), whose zlib stream holds 0xFF bytes.
+#   Expect: the same title; PRIV content "odid3", a NUL, then 600 pseudo random bytes.
+# v24_compression_bomb.mp3: ID3v2.4, a TIT2 frame whose zlib stream inflates to 16 MiB of zeros
+#   while its data length indicator says 10 bytes.
+#   Expect: the frame kept as stored, marked as badly compressed, without allocating 16 MiB.
+python3 - no_tag.mp3 <<'PY'
+import sys, zlib
+audio = open(sys.argv[1], 'rb').read()
+def syncsafe(n):
+    return bytes([(n >> 21) & 0x7F, (n >> 14) & 0x7F, (n >> 7) & 0x7F, n & 0x7F])
+def unsync(b):
+    out = bytearray()
+    for i, c in enumerate(b):
+        out.append(c)
+        if c == 0xFF and (i + 1 == len(b) or b[i + 1] >= 0xE0 or b[i + 1] == 0):
+            out.append(0)
+    return bytes(out)
+def write(name, major, frames):
+    size = syncsafe(len(frames))
+    open(name, 'wb').write(b'ID3' + bytes([major, 0, 0]) + size + frames + audio)
+title = b'\x00Compressed title, then' + b' la' * 40
+compressed = zlib.compress(title, 9)
+artist = b'\x00Marlowe Kite'
+write('v23_compressed.mp3', 3,
+    b'TIT2' + (4 + len(compressed)).to_bytes(4, 'big') + b'\x00\x80'
+    + len(title).to_bytes(4, 'big') + compressed
+    + b'TPE1' + len(artist).to_bytes(4, 'big') + b'\x00\x00' + artist)
+# The first seed whose zlib stream holds a 0xFF that unsynchronisation must protect.
+for seed in range(1, 1000):
+    x = seed
+    noise = bytearray()
+    for _ in range(600):
+        x = (x * 1103515245 + 12345) & 0x7FFFFFFF
+        noise.append((x >> 16) & 0xFF)
+    private = b'odid3\x00' + bytes(noise)
+    private_stream = zlib.compress(private, 9)
+    if unsync(private_stream) != private_stream:
+        break
+stored_private = unsync(private_stream)
+stored_title = syncsafe(len(title)) + compressed
+stored_private = syncsafe(len(private)) + stored_private
+write('v24_compressed.mp3', 4,
+    b'TIT2' + syncsafe(len(stored_title)) + b'\x00\x09' + stored_title
+    + b'PRIV' + syncsafe(len(stored_private)) + b'\x00\x0b' + stored_private)
+bomb = syncsafe(10) + zlib.compress(b'\x00' * (16 << 20), 9)
+write('v24_compression_bomb.mp3', 4, b'TIT2' + syncsafe(len(bomb)) + b'\x00\x09' + bomb)
+PY
+
+# zlib/dynamic.z: 1500 bytes of skewed pseudo random letters (zlib/dynamic.txt), compressed by
+# Python's zlib into a block with dynamic Huffman codes, for the tests of odid3's inflater.
+mkdir -p zlib
+python3 - zlib/dynamic.txt zlib/dynamic.z <<'PY'
+import sys, zlib
+x = 7
+text = bytearray()
+for _ in range(1500):
+    x = (x * 1103515245 + 12345) & 0x7FFFFFFF
+    r = (x >> 16) % 100
+    text.append(ord('e') if r < 30 else ord('t') if r < 50 else ord(' ') if r < 65 else ord('a') + r % 20)
+stream = zlib.compress(bytes(text), 9)
+assert (stream[2] >> 1) & 3 == 2, 'the block must use dynamic Huffman codes'
+open(sys.argv[1], 'wb').write(bytes(text))
+open(sys.argv[2], 'wb').write(stream)
 PY
 
 # truncated_tag.mp3: the first 150 bytes of v23_cover.mp3, cut inside the APIC frame.

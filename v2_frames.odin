@@ -11,7 +11,7 @@ Frame :: struct {
 	format:       Frame_Format,
 	group:        u8, // when format has .Grouping
 	method:       u8, // the encryption method, when format has .Encryption
-	data:         []u8, // unsynchronisation undone, without the bytes the format flags add
+	data:         []u8, // the content, unless problem says otherwise
 	problem:      Frame_Problem,
 	offset:       i64, // of the frame header in the file; -1 for a frame not read from a file
 	size:         int, // the size field of the frame header
@@ -50,11 +50,17 @@ Frame_Problem :: enum u8 {
 	Too_Short,
 	// Read with skip_picture_data: data is nil.
 	Skipped_Picture,
-	// The data length indicator does not match the data: data holds what was decoded.
+	// The data length indicator, or ID3v2.3's decompressed size, does not match the data: data
+	// holds what was decoded.
 	Bad_Data_Length,
 	// Said to be unsynchronised, but its bytes cannot be (a 0xFF followed by 0xE0 or more, or last):
 	// the flag lied, and data holds the bytes as stored.
 	Bad_Unsynchronisation,
+	// Encrypted: data holds the bytes as stored, unsynchronisation undone.
+	Encrypted,
+	// Compressed, but the zlib stream is damaged or inflates well past its declared size: data
+	// holds the bytes as stored, unsynchronisation undone.
+	Bad_Compression,
 }
 
 // The first frame with this ID at or after start.
@@ -207,7 +213,7 @@ read_frames :: proc(tag: ^Tag, body: ^Body, options: Read_Options, warnings: ^Wa
 		}
 		frame := read_frame(body, pos, h, tag.version, options, tag.allocator) or_return
 		#partial switch frame.problem {
-		case .Too_Short, .Bad_Data_Length, .Bad_Unsynchronisation:
+		case .Too_Short, .Bad_Data_Length, .Bad_Unsynchronisation, .Bad_Compression:
 			warnings^ += {.Frame_Problems}
 		}
 		if _, append_err := append(&tag.frames, frame); append_err != nil {
@@ -352,8 +358,22 @@ read_frame :: proc(
 	extras := split_frame_extras(&f, version)
 	copy(f.data, f.data[extras:])
 	f.data = shrink(f.data, len(f.data) - extras, allocator) or_return
-	known_length := .Compression not_in f.format && .Encryption not_in f.format
-	if f.problem == .None && known_length && f.data_length >= 0 && f.data_length != len(f.data) {
+	switch {
+	case f.problem != .None:
+		return
+	case .Encryption in f.format:
+		f.problem = .Encrypted
+		return
+	case .Compression in f.format:
+		inflated, ok := inflate_frame(f.data, i64(f.data_length), allocator) or_return
+		if !ok {
+			f.problem = .Bad_Compression
+			return
+		}
+		delete(f.data, allocator)
+		f.data = inflated
+	}
+	if f.problem == .None && f.data_length >= 0 && f.data_length != len(f.data) {
 		f.problem = .Bad_Data_Length
 	}
 	return

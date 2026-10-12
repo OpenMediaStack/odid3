@@ -78,6 +78,7 @@ The repository root is the `odid3` package. Colophon imports it by path; the rec
 | `convert.odin` | Converting a tag between ID3v2.2, 2.3 and 2.4. |
 | `render.odin` | Building the bytes of an ID3v2 tag from the model, with the write options. |
 | `write.odin` | Rebuilding a file in memory or on disk, safely. |
+| `inflate.odin` | Inflating compressed frames (zlib and deflate), within the size they declare. Our own, since `core:compress/zlib` asserts on some damaged streams. |
 | `deflate.odin` | The deflate encoder for compressed frames (see [Decisions](#decisions)). |
 | `tests/` | The `odid3_tests` package: tests through the public API. |
 | `testdata/` | Fixtures, the script that makes them, and ffprobe's output for each one. |
@@ -135,7 +136,7 @@ The order is Florent's: reading, then writing, then the v1 tag, then the command
 3. **`feat: ID3v1, ID3v1.1 and the Enhanced TAG`**: `V1_Tag`, the genre table, Latin-1 text (and UTF-8 written by some taggers in ID3v1 fields), the longer title, artist and album of the Enhanced TAG.
 4. **`feat: ID3v2.3 and 2.4 frames`**: the frame model (`Frame` with its ID, status and format flags, data, and its offset and size in the file), the extended header, padding, ID3v2.4 frame sizes written as plain integers by old iTunes versions, warnings for damaged frames, and the read option that leaves picture data unread for fast scans. Frame contents stay bytes in this slice.
 5. **`feat: unsynchronisation, data length indicator and grouping`**: tag level unsynchronisation (ID3v2.2, 2.3, 2.4), frame level unsynchronisation (ID3v2.4), the data length indicator and the grouping byte, with frame offsets that stay exact in the file when unsynchronisation removed bytes.
-6. **`feat: compressed and encrypted frames`**: compressed frames inflated with `core:compress/zlib`, the output bounded by the declared size; encrypted frames kept as stored and marked.
+6. **`feat: compressed and encrypted frames`**: compressed frames inflated by a decoder of our own (`core:compress/zlib` asserts on some damaged streams), the output bounded by the declared size; encrypted frames kept as stored and marked.
 7. **`feat: ID3v2.2 tags`**: three-character IDs and six-byte frame headers, the `PIC` frame's image format, a compressed ID3v2.2 tag reported (no compression scheme was ever defined for it) and kept unread.
 8. **`feat: appended ID3v2.4 tags`**: the footer, and a tag found from its footer at the end of the file, before ID3v1 and around an APE tag.
 9. **`feat: decode frame contents`**: `decode_frame` and the `Frame_Content` union: text frames in the four encodings with ID3v2.4's multiple values, `TXXX`, URLs, `WXXX`, `COMM` and `USLT`, `APIC` and `PIC`, `UFID`, `POPM`, `PCNT`, `PRIV`, and raw bytes for the rest. This is the decoded value of the raw frame view.

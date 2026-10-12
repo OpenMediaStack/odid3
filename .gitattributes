@@ -1,3 +1,4 @@
 * text=auto eol=lf
 *.mp3 binary
 *.png binary
+*.z binary
