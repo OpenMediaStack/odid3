@@ -4,7 +4,7 @@
 
 An ID3 library for [Odin](https://odin-lang.org), part of Open Media Stack. It reads and writes the tags of MP3 files, every version of them: ID3v1, ID3v1.1 and the Enhanced TAG, ID3v2.2, ID3v2.3 and ID3v2.4.
 
-> **Status:** v1 is implemented. The `v1.0.0` tag comes once it has been reviewed; until then the API can still change.
+> **Status:** 1.0.0. odid3 follows semantic versioning: the API does not break before 2.0.0.
 
 ## What it does
 
@@ -21,11 +21,15 @@ The MPEG audio stream itself (duration, bitrate) is out of scope: `Layout.audio`
 
 ## Installing
 
-odid3 is one Odin package. Add the repository to your project, as a git submodule pinned to a tag for example, and import it by its path:
+odid3 is one Odin package. Add the repository to your project, as a git submodule pinned to a tag for example, and import it by its path, here from a package at your project's root:
 
 ```bash
 git submodule add https://github.com/OpenMediaStack/odid3 libs/odid3
+git -C libs/odid3 checkout v1.0.0
+git add libs/odid3
 ```
+
+Then commit: your repository records the tag's commit.
 
 ```odin
 import id3 "libs/odid3"
