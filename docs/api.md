@@ -416,9 +416,11 @@ Dropped_Frame :: struct {
 	reason: Drop_Reason,
 }
 Drop_Reason :: enum u8 {
-	No_Equivalent, // RVA2 in ID3v2.3, CHAP in ID3v2.2...
-	Encrypted, // cannot be converted without its key
+	No_Equivalent, // RVA2 in ID3v2.3, RVAD in ID3v2.4, CHAP in ID3v2.2...
+	Encrypted, // cannot be converted without its key or sizes
 	Discard_On_Tag_Alter, // an unknown frame that asks to be dropped when its tag changes
+	Not_Encodable, // text in an encoding the target lacks, in a frame odid3 cannot re-encode
+	Tag_Removed, // converted to .None
 }
 
 // A deep copy, to preview a conversion without touching the original.

@@ -179,6 +179,34 @@ destroy_v1 :: proc(v1: ^V1_Tag) {
 }
 
 @(private)
+clone_v1 :: proc(v1: ^V1_Tag, allocator: runtime.Allocator) -> (duplicate: V1_Tag, err: Error) {
+	duplicate = {
+		version   = v1.version,
+		track     = v1.track,
+		genre     = v1.genre,
+		allocator = allocator,
+	}
+	defer if err != nil {
+		destroy_v1(&duplicate)
+	}
+	duplicate.title = strings.clone(v1.title, allocator) or_return
+	duplicate.artist = strings.clone(v1.artist, allocator) or_return
+	duplicate.album = strings.clone(v1.album, allocator) or_return
+	duplicate.year = strings.clone(v1.year, allocator) or_return
+	duplicate.comment = strings.clone(v1.comment, allocator) or_return
+	if e, ok := v1.enhanced.?; ok {
+		duplicate.enhanced = V1_Enhanced {
+			speed = e.speed,
+		}
+		d := &duplicate.enhanced.?
+		d.genre = strings.clone(e.genre, allocator) or_return
+		d.start_time = strings.clone(e.start_time, allocator) or_return
+		d.end_time = strings.clone(e.end_time, allocator) or_return
+	}
+	return
+}
+
+@(private)
 destroy_v1_enhanced :: proc(e: ^V1_Enhanced, allocator: runtime.Allocator) {
 	delete(e.genre, allocator)
 	delete(e.start_time, allocator)

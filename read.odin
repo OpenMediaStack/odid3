@@ -101,6 +101,7 @@ destroy :: proc {
 	destroy_pictures,
 	destroy_comments,
 	destroy_strings,
+	destroy_dropped,
 }
 
 // Frees what read_bytes or read_file allocated in tags and resets it.
