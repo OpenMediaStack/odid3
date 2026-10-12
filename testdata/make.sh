@@ -244,7 +244,7 @@ printf '\310' | dd of=v1_genre_out_of_range.mp3 bs=1 seek=$((size - 1)) conv=not
 {
 	cat no_tag.mp3
 	printf 'TAG+'
-	field "o fit" 60
+	field "d TAG to fit" 60
 	field "" 60
 	field "" 60
 	printf '\x02'
