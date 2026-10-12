@@ -264,7 +264,6 @@ inflate_zlib :: proc(
 	}
 	defer if e != .None {
 		delete(s.output)
-		out = nil
 	}
 	e = inflate_blocks(&s)
 	if e != .None {

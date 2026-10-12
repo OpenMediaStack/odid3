@@ -324,34 +324,39 @@ Field :: enum u8 {
 	Track_Total, // after the slash
 	Disc, // TPOS, TPA
 	Disc_Total,
-	Genre, // TCON, TCO, ID3v1 references resolved, several joined with "; "
-	Comment, // COMM with an empty description, else the first one that is not iTunes' own
+	Genre, // TCON, TCO, ID3v1 references resolved then their refinement, several joined with "; "
+	Comment, // COMM with an empty description, else the first one that is not iTunes' own, else ffmpeg's TXXX "comment"
 }
 Fields :: bit_set[Field; u16]
 
-// "" when absent. On Tags, falls back to ID3v1 for the fields it has.
+// "" when absent. On Tags, falls back to ID3v1 for the fields it has. Allocation errors are
+// optional results (#optional_allocator_error), so `title := get(&tags, .Title)` is fine.
 get :: proc{get_tag_field, get_file_field}
 // An empty value removes the field. The new frame takes the version's default encoding, an
 // existing one keeps its own when it can hold the value.
 set :: proc(tag: ^Tag, field: Field, value: string) -> Error
 
-year :: proc(tag: ^Tag) -> (year: int, ok: bool)
-track :: proc(tag: ^Tag) -> (number, total: int) // 0 when absent
-disc :: proc(tag: ^Tag) -> (number, total: int)
+// On Tags, year and track fall back to ID3v1. They allocate nothing.
+year :: proc{tag_year, file_year} // -> (year: int, ok: bool)
+track :: proc{tag_track, file_track} // -> (number, total: int), 0 when absent
+disc :: proc{tag_disc, file_disc}
 set_track :: proc(tag: ^Tag, number, total: int) -> Error
 set_disc :: proc(tag: ^Tag, number, total: int) -> Error
-genres :: proc(tag: ^Tag, allocator := context.allocator) -> []string
+genres :: proc(tag: ^Tag, allocator := context.allocator) -> ([]string, runtime.Allocator_Error) #optional_allocator_error
 set_genres :: proc(tag: ^Tag, genres: []string) -> Error
 
-pictures :: proc(tag: ^Tag, allocator := context.allocator) -> []Picture
-front_cover :: proc(tag: ^Tag, allocator := context.allocator) -> (picture: Picture, ok: bool) // else the first picture
+pictures :: proc(tag: ^Tag, allocator := context.allocator) -> ([]Picture, runtime.Allocator_Error) #optional_allocator_error
+front_cover :: proc(tag: ^Tag, allocator := context.allocator) -> (picture: Picture, found: bool, err: runtime.Allocator_Error) // else the first picture
 set_picture :: proc(tag: ^Tag, picture: Picture) -> Error // replaces the pictures of the same type
 remove_pictures :: proc(tag: ^Tag, type: Maybe(Picture_Type) = nil)
 
-user_text :: proc(tag: ^Tag, description: string, allocator := context.allocator) -> (value: string, ok: bool)
+user_text :: proc(tag: ^Tag, description: string, allocator := context.allocator) -> (value: string, found: bool, err: runtime.Allocator_Error)
 set_user_text :: proc(tag: ^Tag, description, value: string) -> Error
-comments :: proc(tag: ^Tag, allocator := context.allocator) -> []Comment
+comments :: proc(tag: ^Tag, allocator := context.allocator) -> ([]Comment, runtime.Allocator_Error) #optional_allocator_error
 set_comment :: proc(tag: ^Tag, text: string, description := "", language := "eng") -> Error
+
+// What the accessors return is freed with destroy and the same allocator: destroy_picture,
+// destroy_pictures, destroy_comments, destroy_strings.
 
 genre_name :: proc(index: u8) -> string // "" past the table
 genre_index :: proc(name: string) -> (index: u8, ok: bool)
