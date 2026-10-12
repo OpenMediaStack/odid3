@@ -16,7 +16,7 @@ Frame :: struct {
 	offset:       i64, // of the frame header in the file; -1 for a frame not read from a file
 	size:         int, // the size field of the frame header
 	stored_flags: [2]u8, // the flag bytes of the frame header, as read
-	data_length:  int, // the data length indicator (ID3v2.4) or decompressed size (ID3v2.3); -1 if none
+	data_length:  int, // data length indicator (ID3v2.4) or decompressed size (ID3v2.3); -1 if none
 	allocator:    runtime.Allocator,
 }
 
@@ -39,7 +39,8 @@ Frame_Format_Flag :: enum u8 {
 	Data_Length_Indicator, // ID3v2.4
 }
 
-// The format flags set on a frame.
+// The format flags set on a frame. Setting .Compression (ID3v2.3 and 2.4) or .Unsynchronisation
+// (ID3v2.4) asks render to apply it to this frame, with the data length indicator ID3v2.4 needs.
 Frame_Format :: bit_set[Frame_Format_Flag;u8]
 
 // Why a frame's data is not its content.

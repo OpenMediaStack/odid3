@@ -9,7 +9,7 @@ An ID3 library for [Odin](https://odin-lang.org), part of Open Media Stack. It r
 ## What it does
 
 - **Reads** every version, with the four text encodings, extended headers, unsynchronisation (whole tag or per frame), the data length indicator, grouping, footers, appended ID3v2.4 tags, compressed frames, encrypted frames kept as they are, and chapters (`CHAP`, `CTOC`).
-- **Keeps every frame.** A tag is a list of frames with their flags and bytes, unknown ones included, so a round trip loses nothing but ID3v2.4's `SEEK`, whose offset to a next tag no longer holds once the tag is rewritten.
+- **Keeps every frame.** A tag is a list of frames with their flags and bytes, unknown ones included: an untouched frame is written back with the same bytes when the version is unchanged (a compressed one with the same content). Only the extended header and ID3v2.4's `SEEK`, whose offset to a next tag no longer holds once the tag is rewritten, are not written.
 - **Typed accessors** for the common fields: title, artist, album artist, album, date, track and total, disc and total, genre (with ID3v1 genre references), comment, pictures, user text.
 - **A raw frame view**: each frame's ID, offset in the file, size, flags and decoded value.
 - **Writes** every version, with options for the text encoding of each frame, the padding, unsynchronisation and compression, and converts between versions with a list of what a conversion drops.
@@ -33,7 +33,9 @@ import id3 "libs/odid3"
 
 ## Usage
 
-The reference is in the doc comments: `odin doc libs/odid3` prints them. Everything a procedure allocates comes from its `allocator` parameter (the context allocator by default) and is freed with `destroy`.
+The reference is in the doc comments: `odin doc libs/odid3` prints them. It leaves out the comments on struct fields and enum values (what each `Warning`, `Format_Error`, `Frame` and `Write_Options` field means), which are in the source and in OLS's hover.
+
+What a procedure returns is allocated with its `allocator` parameter (the context allocator by default) and freed with the same allocator: strings and byte slices with `delete`, everything else with `destroy`. The setters, `set_encoding`, `convert` and `sync_v1` change a tag in place with the tag's own allocator, the one it was read or cloned with.
 
 ### Reading
 
@@ -60,15 +62,24 @@ print_tags :: proc(path: string) -> id3.Error {
 }
 ```
 
-A damaged file is not an error: `read_file` returns what it could read, and `tags.warnings` says what was wrong.
+A damaged file is not an error: `read_file` returns what it could read, and `tags.warnings` says what was wrong. `Frame_Problems` means some frames were damaged: each frame's `problem` says how, and a decoded chapter has its own `warnings` for the frames inside it. For a fast scan, `id3.Read_Options{skip_picture_data = true}` leaves the pictures' data unread; tags read so cannot be written.
+
+Reading is thread safe: any number of threads can read files at once. A tag keeps using the allocator it was read with when it is edited later, so read with an allocator every thread may use, or `clone` the tags to another allocator before handing them over.
 
 ### The raw frame view
+
+Each frame has its `id`, its `offset` in the file (-1 for a frame added or rebuilt since), the `size` its header gives, its `status` and `format` flags, its `data`, and a `problem` when the data is not its content (encrypted, badly compressed).
 
 ```odin
 for &frame in tags.v2.frames {
 	content, err := id3.decode_frame(&frame, tags.v2.version)
 	defer id3.destroy(&content)
-	fmt.println(frame.id, frame.offset, frame.size, frame.status, frame.format, content, err)
+	#partial switch c in content {
+	case id3.Text:
+		fmt.println(frame.id, frame.offset, frame.size, frame.format, c.values)
+	case:
+		fmt.println(frame.id, frame.offset, frame.size, frame.format, len(frame.data), "bytes", err)
+	}
 }
 ```
 
@@ -90,15 +101,21 @@ retitle :: proc(path, cover_path: string) -> id3.Error {
 
 	overflow := id3.sync_v1(&tags, .Keep) // rewrite ID3v1 where the file has one
 	if .Title in overflow {
-		fmt.println("the ID3v1 title is cut to 30 Latin-1 characters")
+		fmt.println("the ID3v1 title is cut, or loses characters Latin-1 lacks")
 	}
 	return id3.write_file(path, &tags)
 }
 ```
 
-`write_file` writes the new file next to the original, with its permissions, and renames it over it; through a symbolic link, the file it points to is rewritten. On any error the original is untouched, and a file another program changes meanwhile gives `File_Changed`. A read-only file is refused. A tag read with damage warnings, or a file holding a second ID3v2 tag, is only rewritten with `Write_Options.replace_damaged`. `write_bytes` rebuilds a file in memory.
+`write_file` writes the new file next to the original, with its permissions, and renames it over it; through a symbolic link, the file it points to is rewritten. On any error the original is untouched. A read-only file is refused. The tags are located again in the file as it is when writing, so its audio is never taken from an old read, but tags another program wrote since `read_file` are replaced; a file that changes during the write itself gives `File_Changed`. `write_bytes` rebuilds a file in memory.
+
+A tag read with damage warnings (`DAMAGE_WARNINGS`), or a file holding a second ID3v2 tag, is only rewritten with `Write_Options.replace_damaged`, since what could not be read would be lost: `Damaged_Tag` is the cue to ask. `Error` is a union of `Format_Error`, `os.Error` and `runtime.Allocator_Error`.
+
+ID3v1 holds Latin-1 only, and is written from `tags.v1` on every write: text read from it as UTF-8, which some taggers write, comes back in Latin-1, with `?` for what Latin-1 lacks. `sync_v1` rebuilds it from the fields and returns those that do not fit; on a `clone` of the tags, it previews them.
 
 ### Versions and developer options
+
+A tag is written in its own version: `tags.v2.version` and `tags.v1.version`. `convert` changes the ID3v2 version and lists the frames it drops or carries only in part; on a `clone`, it previews them.
 
 ```odin
 preview := id3.clone(&tags.v2) or_return
@@ -106,7 +123,7 @@ defer id3.destroy(&preview)
 lost := id3.convert(&preview, .V2_2) or_return
 defer id3.destroy(&lost)
 for frame in lost {
-	fmt.printfln("ID3v2.2 would drop %s: %v", frame.id, frame.reason)
+	fmt.printfln("ID3v2.2 would drop or cut %s: %v", frame.id, frame.reason)
 }
 
 dropped := id3.convert(&tags.v2, .V2_3) or_return
@@ -120,6 +137,8 @@ options := id3.Write_Options {
 }
 id3.write_file(path, &tags, options) or_return
 ```
+
+The options apply to every frame; one frame can ask for its own instead: `id3.set_encoding(&frame, tags.v2.version, .UTF16BE)` re-encodes its text, and `frame.format += {.Compression}` (ID3v2.3 and 2.4) or `{.Unsynchronisation}` (ID3v2.4) asks `write_file` to apply it to this frame. To remove a tag, set `tags.v2.version = .None` (or `convert` to `.None`), and `id3.sync_v1(&tags, .Never)` for ID3v1.
 
 ## Development
 

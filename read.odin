@@ -11,7 +11,8 @@ Tags :: struct {
 	warnings: Warnings,
 }
 
-// How to read tags.
+// How to read tags. skip_picture_data keeps picture frames without their data, for fast scans;
+// tags read so cannot be written (Incomplete_Tag).
 Read_Options :: struct {
 	// Keeps picture frames without their data, for fast scans. Tags read this way cannot be written.
 	skip_picture_data: bool,
@@ -89,8 +90,9 @@ read_source :: proc(
 	return
 }
 
-// Frees what reading or decode_frame allocated and resets the value. A decoded content is freed
-// with the allocator given to decode_frame.
+// Frees what a procedure of this package returned (tags, a tag, a frame, ID3v1, a decoded content,
+// pictures, comments, genres, the frames a conversion dropped) and resets the value. A value is
+// freed with the allocator it was made with: a decoded content with the one given to decode_frame.
 destroy :: proc {
 	destroy_tags,
 	destroy_tag,

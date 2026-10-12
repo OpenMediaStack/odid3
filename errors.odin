@@ -7,7 +7,7 @@ import "core:os"
 // it could read, with Warnings.
 Error :: union #shared_nil {
 	Format_Error,
-	os.Error, // opening or reading a file
+	os.Error, // opening, reading, writing or renaming a file
 	runtime.Allocator_Error,
 }
 
@@ -19,7 +19,8 @@ Format_Error :: enum u8 {
 	Not_Decodable,
 	// Frame data that does not follow the layout of its frame.
 	Bad_Content,
-	// Rendering a tag whose version is .None.
+	// A tag whose version is .None where one is needed: rendering, setting a field, encoding a
+	// frame.
 	No_Version,
 	// A tag over 256 MB (the largest size a syncsafe integer holds), or a frame over the largest
 	// size its version can write.
@@ -33,9 +34,12 @@ Format_Error :: enum u8 {
 	// A value a field cannot hold: a date or a number that does not parse, a NUL, a comment
 	// language that is not 3 letters.
 	Bad_Value,
-	// A write option the version does not have, such as a footer before ID3v2.4.
+	// Something the version does not have: a footer before ID3v2.4, compression or a frame written
+	// as stored in ID3v2.2, a date part ID3v2.3 cannot hold, a MIME type ID3v2.2 has no name for.
 	Not_In_Version,
-	// Writing tags read with skip_picture_data: their pictures were not read.
+	// Writing or converting a tag whose frames were not all read: pictures skipped with
+	// skip_picture_data, the frames of a compressed ID3v2.2 tag (which replace_damaged lets render
+	// drop).
 	Incomplete_Tag,
 	// Writing over a tag read with damage warnings (DAMAGE_WARNINGS) without
 	// Write_Options.replace_damaged: the bytes that could not be read would be lost.
@@ -53,8 +57,8 @@ Warning :: enum u8 {
 	Truncated_Tag,
 	// An ID3v2 version after 2.4: the tag is kept as unknown bytes.
 	Unsupported_Version,
-	// Another ID3v2 tag, right after the first one or appended at the end. Writing replaces both
-	// with a single tag.
+	// Another ID3v2 tag, right after the first one or appended at the end. Writing with
+	// replace_damaged replaces both with a single tag.
 	Second_V2_Tag,
 	// An ID3v2.4 footer that does not repeat the tag header.
 	Bad_Footer,

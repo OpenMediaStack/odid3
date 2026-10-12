@@ -1,3 +1,4 @@
+#+private
 package odid3
 
 import "core:slice"

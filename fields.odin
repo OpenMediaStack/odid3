@@ -21,10 +21,11 @@ Field :: enum u8 {
 	Comment, // COMM, COM: see get
 }
 
-// A set of fields.
+// A set of fields, such as those sync_v1 and v1_from_tag report as not fitting in ID3v1.
 Fields :: bit_set[Field;u16]
 
-// The value of a field, allocated with allocator; "" when absent or undecodable. Several values
+// The value of a field, allocated with allocator (free it with delete); "" when absent or
+// undecodable. Several values
 // (ID3v2.4 allows them) are joined with "; ". On Tags, a field the ID3v2 tag lacks comes from
 // ID3v1. The comment is the first COMM frame without a description, else the first one that is
 // not one of iTunes' own (described "iTun..."), else a TXXX frame described "comment", as ffmpeg
