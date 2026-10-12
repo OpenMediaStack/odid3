@@ -13,12 +13,12 @@ Its first user is Colophon (`OpenMediaStack/colophon`, cloned in `~/Code/colopho
 Florent decides, the agents build.
 
 - **Florent** sets the direction, writes or approves the spec of each change, defines what "done" means, and reviews every diff before it lands.
-- **The agents** plan, implement, test and verify. They propose; they never decide product questions alone. When a choice is genuinely Florent's (a behaviour, a dependency, an API trade-off), ask. The open ones are listed in [Open questions](#open-questions).
+- **The agents** plan, implement, test and verify. They propose; they never decide product questions alone. When a choice is genuinely Florent's (a behaviour, a dependency, an API trade-off), ask. The answers are kept in [Decisions](#decisions).
 - **Small slices.** One change does one thing and can be reviewed in a few minutes. A larger feature is cut into slices first, and the plan is shown before any code. Each slice ends on something that runs and is tested.
 - **Plan first** for anything that changes the public API, adds a dependency, or touches how a file is written: a short plan with the files involved, the approach, and how it will be verified.
 - **One branch and one pull request per change, as we go.** Branches are named after the Conventional Commits type and the change, in English (`feat/v1-tags`, `fix/...`, `docs/...`, `chore/...`, `test/...`, `ci/...`), and are never renamed. `main` only takes squash merges, so the pull request title, a Conventional Commit, becomes the commit on `main`. Nothing is pushed to `main` directly, except the initial commit that starts the repository.
 - **The CI runs on every pull request**: build checks, tests, formatting and lint on macOS, Windows and Linux (see [Definition of done](#definition-of-done)).
-- **Florent merges.** A pull request is merged once Florent approves it and the CI passes.
+- **The agent merges once the CI is green.** When every check of its pull request passes, the agent that opened it squash-merges it and deletes its branch; the next slice starts from the updated `origin/main`. Florent reviews the merged changes and asks for fixes, which come as new pull requests. Tagging a release is still Florent's call.
 - **Start from the prototype.** `~/Code/colophon-odin/tags/` (not a git repository) already reads ID3v1, ID3v2.2, 2.3 and 2.4 and writes 2.3 and 2.4, with 25 tests and fixtures from `~/Code/colophon-odin/testdata/make.sh`. Port, restructure and extend that code rather than rewrite it from zero. Its MPEG audio code (`mpeg.odin`) stays out of odid3.
 - **Florent keeps learning.** When a change relies on a concept that is not obvious (unsynchronisation, syncsafe integers, the data length indicator, a deflate block, a UTF-16 surrogate pair), the summary explains it in two or three sentences with a link to the spec (see [References](#references)). No lectures, just enough to review with understanding.
 - Talk to Florent in French. Everything written in the repository or on GitHub is in English: code, comments, docs, the README, commit messages, pull request titles and descriptions, review comments.
@@ -76,7 +76,7 @@ The repository root is the `odid3` package. Colophon imports it by path; the rec
 | `convert.odin` | Converting a tag between ID3v2.2, 2.3 and 2.4. |
 | `render.odin` | Building the bytes of an ID3v2 tag from the model, with the write options. |
 | `write.odin` | Rebuilding a file in memory or on disk, safely. |
-| `deflate.odin` | Only if Florent chooses it: the deflate encoder for compressed frames (see [Open questions](#open-questions)). |
+| `deflate.odin` | The deflate encoder for compressed frames (see [Decisions](#decisions)). |
 | `tests/` | The `odid3_tests` package: tests through the public API. |
 | `testdata/` | Fixtures, the script that makes them, and ffprobe's output for each one. |
 | `docs/api.md` | The public API as designed, until `odin doc` replaces it. |
@@ -153,7 +153,7 @@ Each slice already tests its own damaged inputs; the last one adds the systemati
 6. **`feat: write ID3v2.2`**: conversion to and from ID3v2.2 (the frame ID table, `PIC` and its image format, 24-bit frame sizes), with the frames it drops.
 7. **`feat: per frame text encoding`**: `set_encoding` re-encodes one frame, or every text frame of a tag; text that Latin-1 cannot hold is an error, never replaced silently.
 8. **`feat: unsynchronisation on write`**: the whole tag in ID3v2.2 and 2.3 (with the rule for a last byte of `0xFF`), each frame in ID3v2.4 (and the header flag when every frame is), as an option or per frame.
-9. **`feat: deflate encoder`**, or **`build: compress with vendor:zlib`**, depending on Florent's answer (see [Open questions](#open-questions)): compressing bytes in the zlib format, tested by inflating with `core:compress/zlib` and, in the interoperability tests, with Python's `zlib`.
+9. **`feat: deflate encoder`**: compressing bytes in the zlib format (LZ77 with hash chains and fixed Huffman codes), tested by inflating with `core:compress/zlib` and, in the interoperability tests, with Python's `zlib`.
 10. **`feat: compressed frames on write`**: ID3v2.3 (with the decompressed size) and ID3v2.4 (with the data length indicator), as an option or per frame.
 11. **`feat: keep encrypted and grouped frames on write`**: written back as stored when the version is unchanged, their flags translated between ID3v2.3 and 2.4, dropped and listed for ID3v2.2.
 12. **`test: interoperability and write robustness`**: every version and option written, then read back by odid3, ffprobe and mutagen; writing over every damaged fixture never panics and never changes the original when it fails.
@@ -172,12 +172,12 @@ Nothing of this starts before the v1 tag. The shape to propose when the time com
 - Write commands: `set`, `convert` (ID3v2 and ID3v1 versions), the developer options (encoding, padding, unsynchronisation, compression), `extract-cover`, and a `--dry-run` that prints what would change.
 - Documented exit codes, tested by running the built binary on the fixtures.
 
-## Open questions
+## Decisions
 
-Decisions that are Florent's, to settle before their slice starts:
+Florent's answers to the questions the plan raised:
 
-1. **Compressed frames on write.** `core:` has no deflate encoder. The recommendation is a small one of our own in `deflate.odin` (LZ77 with hash chains and fixed Huffman codes, a few hundred lines), which keeps the library free of C and needs nothing on the Windows runner. The other way is `vendor:zlib`, which links the system zlib on macOS and Linux and a `libz.lib` on Windows.
-2. **Where the MPEG audio code goes.** The prototype's `mpeg.odin` (duration, bitrate, Xing and VBRI headers) is out of scope here. The recommendation is a package inside Colophon, fed by odid3's `Layout` (which says where the audio starts and ends), extracted into its own library only if another Odin program needs it.
-3. **Two ID3v2 tags in one file** (a leading tag and an appended one, or two leading tags left by a broken tagger). The recommendation: read the first, report the other as a warning, and write a single leading tag that replaces both.
-4. **The extended header on write.** Reading it is in scope; writing it (CRC-32, ID3v2.4 restrictions) is not listed. The recommendation is to drop it on write in v1 and add a CRC option later if developer mode wants it.
-5. **A pre-release for Colophon.** If Colophon wants to start on the reading API before the v1 tag, a `v0.1.0` tag after the reading slices would let it pin something.
+1. **Compressed frames on write** use a small deflate encoder of our own in `deflate.odin`, rather than `vendor:zlib`: the library stays free of C, its allocations go through Odin's allocators (so the test runner sees them), and it keeps compiling for targets without a C zlib, such as a future web build of Colophon.
+2. **The MPEG audio code** of the prototype (duration, bitrate, Xing and VBRI headers) goes into a package inside Colophon, fed by odid3's `Layout` (which says where the audio starts and ends). It moves to its own library only if another Odin program needs it.
+3. **Two ID3v2 tags in one file** (a leading tag and an appended one, or two leading tags left by a broken tagger): the first is read, the other is reported as a warning, and writing puts a single leading tag in place of both.
+4. **The extended header** is read but dropped on write in v1. A CRC option can come later if developer mode wants it.
+5. **A pre-release for Colophon**: a `v0.1.0` tag after the reading slices if Colophon wants to start on the reading API before v1.
