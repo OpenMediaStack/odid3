@@ -21,9 +21,10 @@ DAMAGE_WARNINGS :: Warnings {
 // The file bytes with its tags replaced by those of tags, allocated with allocator and owned by the
 // caller, who frees them with delete: the ID3v2 tag first (none when its version is .None), then
 // everything that lies between the tags of the file (the audio, APE and Lyrics3 tags, unknown
-// bytes) byte for byte, then ID3v1 (none when its version is .None). A second ID3v2 tag, stacked
-// or appended, is dropped. The tags are located in file again, so tags may come from another read
-// of it; damage found in file as it is now also needs replace_damaged.
+// bytes) byte for byte, then ID3v1 (none when its version is .None): the file's own ID3v1 bytes,
+// with its Enhanced TAG, when they hold the same values, else tags.v1 in Latin-1. A second ID3v2
+// tag, stacked or appended, is dropped. The tags are located in file again, so tags may come from
+// another read of it; damage found in file as it is now also needs replace_damaged.
 write_bytes :: proc(
 	file: []u8,
 	tags: ^Tags,
@@ -37,7 +38,7 @@ write_bytes :: proc(
 	src := memory_source(file)
 	layout, _, warnings := locate(&src) or_return
 	check_damage(warnings, options) or_return
-	head, tail := render_tags(tags, options, allocator) or_return
+	head, tail := render_tags(tags, &src, layout, options, allocator) or_return
 	defer delete(head, allocator)
 	defer delete(tail, allocator)
 	ranges, count := kept_ranges(layout)
@@ -79,9 +80,6 @@ write_file :: proc(
 	if type != .Regular {
 		return os.Error(os.General_Error.Invalid_File)
 	}
-	head, tail := render_tags(tags, options, allocator) or_return
-	defer delete(head, allocator)
-	defer delete(tail, allocator)
 
 	// Opened for writing too, so that a file the caller may not write is refused everywhere, as
 	// Windows refuses to rename over it.
@@ -95,6 +93,9 @@ write_file :: proc(
 	src := file_source(original) or_return
 	layout, _, warnings := locate(&src) or_return
 	check_damage(warnings, options) or_return
+	head, tail := render_tags(tags, &src, layout, options, allocator) or_return
+	defer delete(head, allocator)
+	defer delete(tail, allocator)
 
 	dir, name := os.split_path(target)
 	dir = dir if dir != "" else "."
@@ -247,6 +248,8 @@ check_unchanged :: proc(
 @(private)
 render_tags :: proc(
 	tags: ^Tags,
+	src: ^Source,
+	layout: Layout,
 	options: Write_Options,
 	allocator: runtime.Allocator,
 ) -> (
@@ -257,13 +260,51 @@ render_tags :: proc(
 		head = render(&tags.v2, options, allocator) or_return
 	}
 	if tags.v1.version != .None {
-		tail, err = render_v1(&tags.v1, allocator)
+		tail, err = v1_bytes(&tags.v1, src, layout, allocator)
 		if err != nil {
 			delete(head, allocator)
 			return nil, nil, err
 		}
 	}
 	return
+}
+
+// The ID3v1 bytes of the file when they hold the values of v1, so that an unchanged tag keeps what
+// rendering would not give back (UTF-8 text some taggers write, bytes after a field's end); else v1
+// rendered.
+@(private)
+v1_bytes :: proc(
+	v1: ^V1_Tag,
+	src: ^Source,
+	layout: Layout,
+	allocator: runtime.Allocator,
+) -> (
+	bytes: []u8,
+	err: Error,
+) {
+	if layout.v1.size > 0 {
+		start := layout.v1_enhanced.offset if layout.v1_enhanced.size > 0 else layout.v1.offset
+		stored := make([]u8, layout.v1.offset + layout.v1.size - start, allocator) or_return
+		if err = source_read(src, start, stored); err != nil {
+			delete(stored, allocator)
+			return nil, err
+		}
+		enhanced := stored[:len(stored) - V1_SIZE]
+		// decode_v1 frees what it decoded when it fails.
+		in_file, decode_err := decode_v1(stored[len(enhanced):], enhanced, allocator)
+		if decode_err != nil {
+			delete(stored, allocator)
+			return nil, decode_err
+		}
+		same := same_v1(v1, &in_file)
+		destroy_v1(&in_file)
+		if same {
+			return stored, nil
+		}
+		delete(stored, allocator)
+	}
+	rendered, render_err := render_v1(v1, allocator)
+	return rendered, render_err
 }
 
 // What a write keeps from a file, in order: everything from the audio to the trailing ID3v1 or

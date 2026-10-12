@@ -12,7 +12,8 @@ content bytes. get and set cover the common fields, decode_frame and encode_fram
 content. Writing a tag writes the model as it is, so an untouched frame keeps its bytes when the
 version is unchanged (a compressed one its content, compressed again); the extended header and
 ID3v2.4's SEEK are not written. convert changes the version and returns the frames it drops or
-carries only in part. ID3v1 holds Latin-1 only: it is written from Tags.v1 on every write.
+carries only in part. An ID3v1 tag whose values are unchanged keeps its bytes; a changed one is
+written in Latin-1, the only encoding ID3v1 has.
 
 Writing: write_file writes the new file next to the original, then renames it over it; the audio,
 APE and Lyrics3 bytes are copied untouched, and on any error the original is left as it was.

@@ -9,7 +9,7 @@ An ID3 library for [Odin](https://odin-lang.org), part of Open Media Stack. It r
 ## What it does
 
 - **Reads** every version, with the four text encodings, extended headers, unsynchronisation (whole tag or per frame), the data length indicator, grouping, footers, appended ID3v2.4 tags, compressed frames, encrypted frames kept as they are, and chapters (`CHAP`, `CTOC`).
-- **Keeps every frame.** A tag is a list of frames with their flags and bytes, unknown ones included: an untouched frame is written back with the same bytes when the version is unchanged (a compressed one with the same content). Only the extended header and ID3v2.4's `SEEK`, whose offset to a next tag no longer holds once the tag is rewritten, are not written.
+- **Keeps every frame.** A tag is a list of frames with their flags and bytes, unknown ones included: an untouched frame is written back with the same bytes when the version is unchanged (a compressed one with the same content), and an unchanged ID3v1 tag keeps its bytes. Only the extended header and ID3v2.4's `SEEK`, whose offset to a next tag no longer holds once the tag is rewritten, are not written.
 - **Typed accessors** for the common fields: title, artist, album artist, album, date, track and total, disc and total, genre (with ID3v1 genre references), comment, pictures, user text.
 - **A raw frame view**: each frame's ID, offset in the file, size, flags and decoded value.
 - **Writes** every version, with options for the text encoding of each frame, the padding, unsynchronisation and compression, and converts between versions with a list of what a conversion drops.
@@ -115,7 +115,7 @@ retitle :: proc(path, cover_path: string) -> id3.Error {
 
 A tag read with damage warnings (`DAMAGE_WARNINGS`), or a file holding a second ID3v2 tag, is only rewritten with `Write_Options.replace_damaged`, since what could not be read would be lost: `Damaged_Tag` is the cue to ask. `Error` is a union of `Format_Error`, `os.Error` and `runtime.Allocator_Error`.
 
-ID3v1 holds Latin-1 only, and is written from `tags.v1` on every write: text read from it as UTF-8, which some taggers write, comes back in Latin-1, with `?` for what Latin-1 lacks. `sync_v1` rebuilds it from the fields and returns those that do not fit; on a `clone` of the tags, it previews them.
+An ID3v1 tag whose values are unchanged keeps its bytes, so text some taggers write in UTF-8 survives a write. A changed one is written from `tags.v1` in Latin-1, the only encoding ID3v1 has, with `?` for what Latin-1 lacks. `sync_v1` rebuilds it from the fields and returns those that do not fit; on a `clone` of the tags, it previews them.
 
 ### Versions and developer options
 
