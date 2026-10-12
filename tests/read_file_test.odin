@@ -22,6 +22,7 @@ read_file_finds_what_read_bytes_finds :: proc(t: ^testing.T) {
 		testing.expectf(t, from_file.v2.revision == from_bytes.v2.revision, "%s: revision", name)
 		testing.expectf(t, from_file.v1 == from_bytes.v1, "%s: v1 differs", name)
 		testing.expectf(t, from_file.v2.padding == from_bytes.v2.padding, "%s: padding", name)
+		testing.expectf(t, from_file.v2.extended == from_bytes.v2.extended, "%s: extended", name)
 		file_frames, bytes_frames := from_file.v2.frames[:], from_bytes.v2.frames[:]
 		testing.expectf(t, len(file_frames) == len(bytes_frames), "%s: frames differ", name)
 		for i in 0 ..< min(len(file_frames), len(bytes_frames)) {
@@ -32,6 +33,11 @@ read_file_finds_what_read_bytes_finds :: proc(t: ^testing.T) {
 				a.size == b.size &&
 				a.status == b.status &&
 				a.format == b.format &&
+				a.group == b.group &&
+				a.method == b.method &&
+				a.problem == b.problem &&
+				a.stored_flags == b.stored_flags &&
+				a.data_length == b.data_length &&
 				bytes.equal(a.data, b.data)
 			testing.expectf(t, same, "%s: frame %d differs", name, i)
 		}

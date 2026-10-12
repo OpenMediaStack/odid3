@@ -162,7 +162,26 @@ grouping_and_encryption_bytes :: proc(t: ^testing.T) {
 	tags = read(t, too_short)
 	f = tags.v2.frames[0]
 	testing.expect_value(t, f.problem, odid3.Frame_Problem.Too_Short)
+	testing.expect_value(t, tags.warnings, odid3.Warnings{.Frame_Problems})
 	testing.expect_value(t, string(f.data), "\x00A")
+	odid3.destroy(&tags)
+}
+
+@(test)
+data_length_as_stored :: proc(t: ^testing.T) {
+	v23 := tag_file(3, 0, frame(3, "PRIV", concat({0, 0, 1, 0}, text("stream")), 0, 0x80))
+	tags := read(t, v23)
+	testing.expect_value(t, tags.v2.frames[0].data_length, 256)
+	odid3.destroy(&tags)
+
+	v24 := tag_file(4, 0, frame(4, "PRIV", concat({0, 0, 2, 0}, text("data")), 0, 0x01))
+	tags = read(t, v24)
+	testing.expect_value(t, tags.v2.frames[0].data_length, 256)
+	testing.expect_value(t, string(tags.v2.frames[0].data), "data")
+	odid3.destroy(&tags)
+
+	tags = read(t, tag_file(4, 0, frame(4, "PRIV", text("data"))))
+	testing.expect_value(t, tags.v2.frames[0].data_length, -1)
 	odid3.destroy(&tags)
 }
 
@@ -195,6 +214,47 @@ extended_headers :: proc(t: ^testing.T) {
 	testing.expect_value(t, ext.restrictions, 0x21)
 	testing.expect_value(t, tags.v2.frames[0].id, "TIT2")
 	odid3.destroy(&tags)
+}
+
+@(test)
+extended_headers_in_files :: proc(t: ^testing.T) {
+	tags := read(t, fixture(t, "v23_extended.mp3"))
+	testing.expect_value(t, tags.warnings, odid3.Warnings{})
+	testing.expect_value(t, tags.v2.extended.crc, 0x1234ABCD)
+	testing.expect_value(t, tags.v2.extended.padding_size, 5000)
+	testing.expect_value(t, string(tags.v2.frames[0].data), "\x00Extended")
+	testing.expect_value(t, tags.v2.padding, 5000)
+	odid3.destroy(&tags)
+
+	tags = read(t, fixture(t, "v24_extended.mp3"))
+	testing.expect_value(t, tags.warnings, odid3.Warnings{})
+	testing.expect(t, tags.v2.extended.update)
+	testing.expect_value(t, tags.v2.extended.crc, 0x0BADF00D)
+	testing.expect_value(t, tags.v2.extended.restrictions, 0x21)
+	testing.expect_value(t, string(tags.v2.frames[0].data), "\x03Extended")
+	odid3.destroy(&tags)
+}
+
+@(test)
+extended_header_flag_without_an_extended_header :: proc(t: ^testing.T) {
+	tags := read(
+		t,
+		tag_file(3, 0x40, frame(3, "TIT2", text("\x00Title")), frame(3, "TPE1", text("\x00A"))),
+	)
+	defer odid3.destroy(&tags)
+	testing.expect_value(t, tags.warnings, odid3.Warnings{.Bad_Extended_Header})
+	testing.expect_value(t, len(tags.v2.frames), 2)
+}
+
+@(test)
+odd_frame_ids_are_kept :: proc(t: ^testing.T) {
+	odd := concat(text("TT2\x00"), {0, 0, 0, 6, 0, 0}, text("\x00Title"))
+	tags := read(t, tag_file(3, 0, odd, frame(3, "TPE1", text("\x00Artist"))))
+	defer odid3.destroy(&tags)
+	testing.expect_value(t, tags.warnings, odid3.Warnings{.Bad_Frame_Ids})
+	testing.expect_value(t, len(tags.v2.frames), 2)
+	testing.expect_value(t, tags.v2.frames[0].id, "TT2\x00")
+	testing.expect_value(t, tags.v2.frames[1].id, "TPE1")
 }
 
 @(test)
@@ -255,6 +315,36 @@ padding_and_what_is_left_in_it :: proc(t: ^testing.T) {
 	testing.expect_value(t, tags.warnings, odid3.Warnings{.Data_In_Padding})
 	testing.expect_value(t, tags.v2.padding, 100)
 	odid3.destroy(&tags)
+}
+
+@(test)
+plain_frame_sizes_in_a_file :: proc(t: ^testing.T) {
+	file := fixture(t, "v24_itunes.mp3")
+	tags := read(t, file)
+	defer odid3.destroy(&tags)
+	testing.expect_value(t, tags.warnings, odid3.Warnings{.Plain_Frame_Sizes})
+	testing.expect_value(t, len(tags.v2.frames), 2)
+	testing.expect_value(t, len(tags.v2.frames[0].data), 256)
+	testing.expect_value(t, tags.v2.frames[1].id, "TPE1")
+	testing.expect_value(t, tags.v2.padding, 100)
+}
+
+// UTF-16 text is full of zeros, which look like padding wherever the syncsafe reading lands.
+@(test)
+plain_frame_sizes_with_zeros_in_the_data :: proc(t: ^testing.T) {
+	utf16 := concat({1, 0xFF, 0xFE}, zeros(253))
+	for i := 3; i < len(utf16); i += 2 {
+		utf16[i] = 'a'
+	}
+	title := concat(text("TIT2"), {0, 0, 1, 0, 0, 0}, utf16)
+	artist := concat(text("TPE1"), {0, 0, 0, 0xC8, 0, 0}, concat({3}, letters(199)))
+	tags := read(t, tag_file(4, 0, title, artist, zeros(50)))
+	defer odid3.destroy(&tags)
+	testing.expect_value(t, tags.warnings, odid3.Warnings{.Plain_Frame_Sizes})
+	testing.expect_value(t, len(tags.v2.frames), 2)
+	testing.expect_value(t, len(tags.v2.frames[0].data), 256)
+	testing.expect_value(t, len(tags.v2.frames[1].data), 200)
+	testing.expect_value(t, tags.v2.padding, 50)
 }
 
 @(test)

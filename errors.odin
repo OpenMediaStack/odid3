@@ -30,6 +30,10 @@ Warning :: enum u8 {
 	Data_In_Padding,
 	// ID3v2.4 frame sizes written as plain integers rather than syncsafe ones, as old iTunes did.
 	Plain_Frame_Sizes,
+	// Frame IDs with characters other than A to Z and 0 to 9: the frames are kept.
+	Bad_Frame_Ids,
+	// At least one frame has a problem that is not of its own choosing: see Frame.problem.
+	Frame_Problems,
 }
 
 // Every warning reading raised.

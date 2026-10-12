@@ -310,6 +310,42 @@ lyrics3v2='LYRICSBEGININD0000211LYR00017[00:01]First line'
 	tail -c 128 v1_0_ascii.mp3
 } >ape_v1.mp3
 
+# v23_extended.mp3, v24_extended.mp3, v24_itunes.mp3: frame level details, around the audio of
+# no_tag.mp3.
+# v23_extended.mp3: ID3v2.3 with an extended header (CRC 0x1234ABCD, padding size 5000), a title,
+#   then 5000 bytes of padding.
+#   Expect: title "Extended", the extended header's values, 5000 bytes of padding.
+# v24_extended.mp3: ID3v2.4 with an extended header holding the update flag, a CRC (0x0BADF00D, in 5
+#   syncsafe bytes) and the restrictions byte 0x21, then a title.
+#   Expect: title "Extended", the extended header's values.
+# v24_itunes.mp3: ID3v2.4 whose frame sizes are plain integers, as old iTunes wrote them: a TIT2
+#   frame of 256 bytes in UTF-16 (read as syncsafe, its size would be 128), then a TPE1 frame.
+#   Expect: both frames, a warning for plain frame sizes.
+python3 - no_tag.mp3 <<'PY'
+import sys
+audio = open(sys.argv[1], 'rb').read()
+def syncsafe(n):
+    return bytes([(n >> 21) & 0x7F, (n >> 14) & 0x7F, (n >> 7) & 0x7F, n & 0x7F])
+def write(name, header, body):
+    open(name, 'wb').write(b'ID3' + header + syncsafe(len(body)) + body + audio)
+title3 = b'\x00Extended'
+title3_frame = b'TIT2' + len(title3).to_bytes(4, 'big') + b'\x00\x00' + title3
+extended3 = (10).to_bytes(4, 'big') + b'\x80\x00' + (5000).to_bytes(4, 'big') + (0x1234ABCD).to_bytes(4, 'big')
+write('v23_extended.mp3', b'\x03\x00\x40', extended3 + title3_frame + bytes(5000))
+crc = 0x0BADF00D
+crc_bytes = bytes([(crc >> 28) & 0x7F, (crc >> 21) & 0x7F, (crc >> 14) & 0x7F, (crc >> 7) & 0x7F, crc & 0x7F])
+extended4 = syncsafe(15) + b'\x01\x70' + b'\x00' + b'\x05' + crc_bytes + b'\x01\x21'
+title4 = b'\x03Extended'
+write('v24_extended.mp3', b'\x04\x00\x40', extended4 + b'TIT2' + syncsafe(len(title4)) + b'\x00\x00' + title4)
+text = '﻿' + 'Paper Satellites, a title long enough for 256 bytes. ' * 3
+title = b'\x01' + text.encode('utf-16-le')[:255]
+assert len(title) == 256
+artist = b'\x01' + '﻿Marlowe Kite'.encode('utf-16-le')
+body = b'TIT2' + len(title).to_bytes(4, 'big') + b'\x00\x00' + title
+body += b'TPE1' + len(artist).to_bytes(4, 'big') + b'\x00\x00' + artist
+write('v24_itunes.mp3', b'\x04\x00\x00', body + bytes(100))
+PY
+
 # truncated_tag.mp3: the first 150 bytes of v23_cover.mp3, cut inside the APIC frame.
 # Expect: a partial tag (title "With a cover") and a warning, no crash.
 head -c 150 v23_cover.mp3 >truncated_tag.mp3

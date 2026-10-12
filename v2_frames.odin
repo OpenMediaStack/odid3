@@ -10,11 +10,12 @@ Frame :: struct {
 	format:       Frame_Format,
 	group:        u8, // when format has .Grouping
 	method:       u8, // the encryption method, when format has .Encryption
-	data:         []u8, // the content, without the bytes the format flags add
+	data:         []u8, // as stored, without the bytes the format flags add
 	problem:      Frame_Problem,
 	offset:       i64, // of the frame header in the file; -1 for a frame not read from a file
 	size:         int, // the size field of the frame header
 	stored_flags: [2]u8, // the flag bytes of the frame header, as read
+	data_length:  int, // the data length indicator (ID3v2.4) or decompressed size (ID3v2.3); -1 if none
 	allocator:    runtime.Allocator,
 }
 
@@ -72,10 +73,20 @@ FRAME_HEADER_SIZE :: 10
 // The frames and padding of a tag, as positions in src.
 @(private)
 Body :: struct {
-	src:       ^Source,
-	start:     i64,
-	end:       i64,
-	truncated: bool,
+	src:         ^Source,
+	start:       i64,
+	end:         i64,
+	truncated:   bool,
+	plain_sizes: bool, // ID3v2.4: a frame size was a plain integer, so later ones probably are
+}
+
+// What can follow a frame.
+@(private)
+Frame_Start :: enum u8 {
+	Nothing,
+	Frame,
+	Padding,
+	End,
 }
 
 @(private)
@@ -98,30 +109,47 @@ read_frames :: proc(tag: ^Tag, body: ^Body, options: Read_Options, warnings: ^Wa
 			read_padding(tag, body, pos, warnings) or_return
 			return nil
 		}
-		if len(head) < FRAME_HEADER_SIZE || !is_frame_id(head[:4]) {
-			if !body.truncated {
-				warnings^ += {.Damaged_Frames}
-			}
+		if len(head) < FRAME_HEADER_SIZE || head[0] < 'A' || head[0] > 'Z' {
+			report_damage(body, warnings)
 			return nil
 		}
 		h := Frame_Header{}
 		copy(h.id[:], head[:4])
 		copy(h.flags[:], head[8:10])
 		h.size = frame_size(body, pos, tag.version, head[4:8], warnings) or_return
-		if h.size > body.end - pos - FRAME_HEADER_SIZE {
-			if !body.truncated {
-				warnings^ += {.Damaged_Frames}
-			}
+		next := pos + FRAME_HEADER_SIZE + h.size
+		if h.size < 0 || next > body.end {
+			report_damage(body, warnings)
 			return nil
 		}
+		if !is_frame_id(head[:4]) {
+			// Some taggers wrote odd IDs, such as ID3v2.2's 3 letters and a NUL in an ID3v2.3 tag:
+			// such a frame is kept when its size leads to what can follow a frame.
+			if (frame_start_at(body, next) or_return) == .Nothing {
+				report_damage(body, warnings)
+				return nil
+			}
+			warnings^ += {.Bad_Frame_Ids}
+		}
 		frame := read_frame(body, pos, h, tag.version, options, tag.allocator) or_return
+		if frame.problem == .Too_Short {
+			warnings^ += {.Frame_Problems}
+		}
 		if _, append_err := append(&tag.frames, frame); append_err != nil {
 			destroy_frame(&frame)
 			return append_err
 		}
-		pos += FRAME_HEADER_SIZE + h.size
+		pos = next
 	}
 	return nil
+}
+
+// A frame that cannot be right ends the frames. In a truncated tag, Truncated_Tag already says so.
+@(private)
+report_damage :: proc(body: ^Body, warnings: ^Warnings) {
+	if !body.truncated {
+		warnings^ += {.Damaged_Frames}
+	}
 }
 
 @(private)
@@ -139,8 +167,10 @@ be32 :: proc(b: []u8) -> u32 {
 	return u32(b[0]) << 24 | u32(b[1]) << 16 | u32(b[2]) << 8 | u32(b[3])
 }
 
-// ID3v2.4 frame sizes are syncsafe, but iTunes wrote them as plain integers. When the syncsafe size
-// does not lead to another frame and the plain one does, the plain one is right.
+// ID3v2.4 frame sizes are syncsafe, but iTunes wrote plain integers for years (mutagen's
+// determine_bpi in mutagen/id3/_tags.py deals with it too). When the two readings differ, the one
+// that leads to another frame or to the end of the tag wins, then the one that leads to padding; once
+// a plain size wins, plain sizes win ties for the rest of the tag. -1 when neither can be right.
 @(private)
 frame_size :: proc(
 	body: ^Body,
@@ -156,30 +186,53 @@ frame_size :: proc(
 	if version != .V2_4 {
 		return plain, nil
 	}
-	safe, ok := syncsafe(b)
-	if ok &&
-	   (i64(safe) == plain ||
-			   (frame_can_start(body, pos + FRAME_HEADER_SIZE + i64(safe)) or_return)) {
-		return i64(safe), nil
+	value, ok := syncsafe(b)
+	safe := i64(value)
+	if ok && safe == plain {
+		return safe, nil
 	}
-	if frame_can_start(body, pos + FRAME_HEADER_SIZE + plain) or_return {
+	rank :: proc(start: Frame_Start) -> int {
+		#partial switch start {
+		case .Frame, .End:
+			return 2
+		case .Padding:
+			return 1
+		}
+		return 0
+	}
+	safe_rank := 0
+	if ok {
+		safe_rank = rank(frame_start_at(body, pos + FRAME_HEADER_SIZE + safe) or_return)
+	}
+	plain_rank := rank(frame_start_at(body, pos + FRAME_HEADER_SIZE + plain) or_return)
+	if plain_rank > safe_rank || (plain_rank > 0 && plain_rank == safe_rank && body.plain_sizes) {
 		warnings^ += {.Plain_Frame_Sizes}
+		body.plain_sizes = true
 		return plain, nil
 	}
-	return i64(safe) if ok else plain, nil
+	if ok {
+		return safe, nil
+	}
+	return -1, nil
 }
 
 @(private)
-frame_can_start :: proc(body: ^Body, at: i64) -> (ok: bool, err: Error) {
+frame_start_at :: proc(body: ^Body, at: i64) -> (start: Frame_Start, err: Error) {
 	if at == body.end {
-		return true, nil
+		return .End, nil
 	}
-	if at > body.end {
-		return false, nil
+	if at > body.end || at < body.start {
+		return .Nothing, nil
 	}
 	buf: [4]u8
 	b := source_bytes(body.src, at, buf[:min(body.end - at, 4)]) or_return
-	return len(b) > 0 && (b[0] == 0 || (len(b) == 4 && is_frame_id(b))), nil
+	switch {
+	case len(b) > 0 && b[0] == 0:
+		return .Padding, nil
+	case len(b) == 4 && is_frame_id(b):
+		return .Frame, nil
+	}
+	return .Nothing, nil
 }
 
 @(private)
@@ -200,39 +253,33 @@ read_frame :: proc(
 	f.stored_flags = h.flags
 	f.status = frame_status(version, h.flags[0])
 	f.format = frame_format(version, h.flags[1])
+	f.data_length = -1
 	id := h.id
 	f.id = strings.clone(string(id[:]), allocator) or_return
 	defer if err != nil {
 		destroy_frame(&f)
 	}
-
-	start := pos + FRAME_HEADER_SIZE
-	extras := read_frame_extras(&f, body, start, h.size, version) or_return
 	if options.skip_picture_data && f.id == "APIC" {
 		f.problem = .Skipped_Picture
 		return
 	}
-	f.data = make([]u8, h.size - extras, allocator) or_return
-	source_read(body.src, start + extras, f.data) or_return
+	f.data = make([]u8, h.size, allocator) or_return
+	source_read(body.src, pos + FRAME_HEADER_SIZE, f.data) or_return
+	extras := split_frame_extras(&f, version)
+	copy(f.data, f.data[extras:])
+	f.data = f.data[:len(f.data) - extras]
 	return
 }
 
 // The bytes a frame's format flags add before its content: in ID3v2.3 the decompressed size, the
 // encryption method and the group, in ID3v2.4 the group, the encryption method and the data length
-// indicator. Returns how many there are, or 0 when the frame is too short to hold them.
+// indicator. Reads them from the start of the frame's data and returns how many there are, 0 when the
+// frame is too short to hold them.
 @(private)
-read_frame_extras :: proc(
-	f: ^Frame,
-	body: ^Body,
-	start, size: i64,
-	version: V2_Version,
-) -> (
-	n: i64,
-	err: Error,
-) {
+split_frame_extras :: proc(f: ^Frame, version: V2_Version) -> (n: int) {
 	fields: [3]struct {
 		flag: Frame_Format_Flag,
-		size: i64,
+		size: int,
 	}
 	if version == .V2_3 {
 		fields = {{.Compression, 4}, {.Encryption, 1}, {.Grouping, 1}}
@@ -244,30 +291,30 @@ read_frame_extras :: proc(
 			n += field.size
 		}
 	}
-	if n > size {
+	if n > len(f.data) {
 		f.problem = .Too_Short
-		return 0, nil
-	}
-	buf: [6]u8
-	extras := source_bytes(body.src, start, buf[:n]) or_return
-	if i64(len(extras)) < n {
-		f.problem = .Too_Short
-		return 0, nil
+		return 0
 	}
 	at := 0
 	for field in fields {
 		if field.flag not_in f.format {
 			continue
 		}
+		b := f.data[at:]
 		#partial switch field.flag {
 		case .Grouping:
-			f.group = extras[at]
+			f.group = b[0]
 		case .Encryption:
-			f.method = extras[at]
+			f.method = b[0]
+		case .Compression:
+			f.data_length = int(be32(b[:4]))
+		case .Data_Length_Indicator:
+			length, ok := syncsafe(b[:4])
+			f.data_length = int(length) if ok else int(be32(b[:4]))
 		}
-		at += int(field.size)
+		at += field.size
 	}
-	return n, nil
+	return n
 }
 
 @(private)

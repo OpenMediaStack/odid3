@@ -138,6 +138,7 @@ failing_allocator_proc :: proc(
 text :: proc(s: string) -> []u8 {
 	return transmute([]u8)s
 }
+
 // A frame of an ID3v2.3 tag (plain size) or ID3v2.4 tag (syncsafe size).
 frame :: proc(major: u8, id: string, data: []u8, status: u8 = 0, format: u8 = 0) -> []u8 {
 	n := len(data)

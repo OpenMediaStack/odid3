@@ -36,7 +36,7 @@ Tag :: struct {
 // The extended header of an ID3v2.3 or 2.4 tag, as read. Writing drops it.
 Extended_Header :: struct {
 	present:      bool,
-	crc:          Maybe(u32), // of the frames (and, in ID3v2.3, not the padding)
+	crc:          Maybe(u32), // of the frames, plus the padding in ID3v2.4
 	padding_size: u32, // ID3v2.3
 	update:       bool, // ID3v2.4: this tag updates an earlier one
 	restrictions: Maybe(u8), // ID3v2.4, the raw byte
@@ -166,11 +166,13 @@ read_v2_tag :: proc(
 		truncated = end > src.size,
 	}
 	if .Extended_Header in tag.flags {
-		ok: bool
-		body.start, ok = read_extended_header(&tag, &body, warnings) or_return
-		if !ok {
+		start, ok := read_extended_header(&tag, &body, warnings) or_return
+		if ok {
+			body.start = start
+		} else if (frame_start_at(&body, body.start) or_return) != .Frame {
 			return
 		}
+		// Otherwise the flag lied, as some taggers' did: the frames start right after the header.
 	}
 	read_frames(&tag, &body, options, warnings) or_return
 	return
@@ -257,7 +259,8 @@ extended_header_v24 :: proc(tag: ^Tag, b: []u8) -> (size: i64, good: bool) {
 		at += 1
 	}
 	if flags & 0x20 != 0 {
-		if at + 6 > len(b) || b[at] != 5 {
+		// 32 bits in 5 syncsafe bytes: the first holds 4 of them.
+		if at + 6 > len(b) || b[at] != 5 || b[at + 1] > 0x0F {
 			return size, false
 		}
 		crc: u64
