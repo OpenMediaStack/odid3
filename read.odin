@@ -83,6 +83,9 @@ read_source :: proc(
 		}
 		tags.v1 = decode_v1(v1, enhanced, allocator) or_return
 	}
+	// A tag the file lacks takes the allocator too, for the frames or values set on it later.
+	tags.v2.allocator = allocator
+	tags.v1.allocator = allocator
 	return
 }
 

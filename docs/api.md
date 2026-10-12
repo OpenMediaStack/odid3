@@ -394,10 +394,11 @@ V1_Policy :: enum u8 {
 	Never,
 }
 
-// Rebuilds tags.v1 from tags.v2 following the policy, and returns the fields that do not fit.
-// A nil version means ID3v1.1 when the track is a number from 1 to 255, else ID3v1.0.
-sync_v1 :: proc(tags: ^Tags, policy: V1_Policy, version: Maybe(V1_Version) = nil, enhanced := false) -> (overflow: Fields)
-v1_from_tag :: proc(tag: ^Tag, version: V1_Version, enhanced := false, allocator := context.allocator) -> (v1: V1_Tag, overflow: Fields)
+// Rebuilds tags.v1 from the file's fields (ID3v2, else ID3v1) following the policy, and returns
+// the fields that do not fit. A nil version means ID3v1.1 when the track is a number from 1 to 255,
+// else ID3v1.0; a nil enhanced keeps the Enhanced TAG when the file has one.
+sync_v1 :: proc(tags: ^Tags, policy: V1_Policy, version: Maybe(V1_Version) = nil, enhanced: Maybe(bool) = nil) -> (Fields, runtime.Allocator_Error) #optional_allocator_error
+v1_from_tag :: proc(tag: ^Tag, version: V1_Version, enhanced := false, allocator := context.allocator) -> (v1: V1_Tag, overflow: Fields, err: runtime.Allocator_Error)
 ```
 
 ## Converting between versions
@@ -437,8 +438,8 @@ DEFAULT_PADDING :: 1024
 
 // The bytes of the ID3v2 tag alone.
 render :: proc(tag: ^Tag, options := Write_Options{}, allocator := context.allocator) -> (bytes: []u8, err: Error)
-// 128 bytes, or 355 with the Enhanced TAG.
-render_v1 :: proc(v1: ^V1_Tag, allocator := context.allocator) -> (bytes: []u8, err: Error)
+// 128 bytes, or 355 with the Enhanced TAG, which comes first.
+render_v1 :: proc(v1: ^V1_Tag, allocator := context.allocator) -> ([]u8, runtime.Allocator_Error) #optional_allocator_error
 
 // The whole file rebuilt in memory: the new tags around the kept bytes of file.
 write_bytes :: proc(file: []u8, tags: ^Tags, options := Write_Options{}, allocator := context.allocator) -> (out: []u8, err: Error)
