@@ -23,7 +23,11 @@ chapters_written_by_ffmpeg :: proc(t: ^testing.T) {
 		ids := []string{"TIT2", "CTOC", "CHAP", "CHAP"}
 		testing.expect_value(t, len(tags.v2.frames), len(ids))
 
-		toc := decode(t, &tags.v2.frames[1], tags.v2.version).(odid3.Table_Of_Contents)
+		toc := expect_content(
+			t,
+			decode(t, &tags.v2.frames[1], tags.v2.version),
+			odid3.Table_Of_Contents,
+		)
 		testing.expect_value(t, toc.element_id, "toc")
 		testing.expect(t, toc.top_level && toc.ordered)
 		testing.expectf(
@@ -37,7 +41,11 @@ chapters_written_by_ffmpeg :: proc(t: ^testing.T) {
 
 		titles := []string{"Intro", "Outro"}
 		for i in 0 ..< 2 {
-			chapter := decode(t, &tags.v2.frames[2 + i], tags.v2.version).(odid3.Chapter)
+			chapter := expect_content(
+				t,
+				decode(t, &tags.v2.frames[2 + i], tags.v2.version),
+				odid3.Chapter,
+			)
 			testing.expect_value(t, chapter.element_id, toc.children[i])
 			testing.expect_value(t, chapter.start_ms, u32(50 * i))
 			testing.expect_value(t, chapter.end_ms, u32(50 * (i + 1)))
@@ -67,7 +75,7 @@ damaged_chapters :: proc(t: ^testing.T) {
 	cut_frames := concat(frame(4, "TIT2", text("\x03Intro")), text("TPE1\x00\x00\x01"))
 	content, chapter_err := decode_one(t, 4, chapter_frame(4, "ch0", 0, 10, cut_frames))
 	testing.expect_value(t, chapter_err, nil)
-	testing.expect_value(t, len(content.(odid3.Chapter).frames), 1)
+	testing.expect_value(t, len(expect_content(t, content, odid3.Chapter).frames), 1)
 }
 
 @(test)
