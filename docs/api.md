@@ -133,7 +133,7 @@ Warning :: enum u8 {
 Warnings :: bit_set[Warning; u16]
 ```
 
-`Truncated_Tag`, `Damaged_Frames`, `Bad_Extended_Header`, `Data_In_Padding` and `Compressed_V22_Tag` mean that bytes of the tag could not be read: rewriting it would lose them, so `write_file` refuses unless `Write_Options.replace_damaged` is set.
+`Truncated_Tag`, `Damaged_Frames`, `Bad_Extended_Header`, `Data_In_Padding`, `Compressed_V22_Tag` and `Too_Many_Frames` mean that bytes of the tag could not be read: rewriting it would lose them, so `write_file` refuses unless `Write_Options.replace_damaged` is set.
 
 ## The ID3v2 model
 
@@ -207,6 +207,7 @@ Frame_Problem :: enum u8 {
 	Bad_Data_Length,
 	Skipped_Picture, // read with skip_picture_data: data is nil
 	Bad_Unsynchronisation, // said to be unsynchronised but cannot be: data holds the bytes as stored
+	Nested_Chapter, // a CHAP or CTOC inside another: kept, not decoded
 }
 
 // Copies id and data.

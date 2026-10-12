@@ -2,6 +2,7 @@ package odid3_tests
 
 import "core:mem"
 import "core:os"
+import "core:slice"
 import "core:strings"
 import "core:testing"
 
@@ -70,7 +71,7 @@ fixture_path :: proc(name: string) -> string {
 	return strings.concatenate({TESTDATA, name}, context.temp_allocator)
 }
 
-// The names of every MP3 fixture.
+// The names of every MP3 fixture, sorted so that a random seed replays the same draws everywhere.
 fixture_names :: proc(t: ^testing.T) -> []string {
 	infos, err := os.read_all_directory_by_path(TESTDATA, context.temp_allocator)
 	testing.expectf(t, err == nil, "cannot list the fixtures: %v", err)
@@ -80,6 +81,7 @@ fixture_names :: proc(t: ^testing.T) -> []string {
 			append(&names, info.name)
 		}
 	}
+	slice.sort(names[:])
 	return names[:]
 }
 

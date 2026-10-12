@@ -239,9 +239,9 @@ chapter_inside_a_chapter :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, nil)
 	outer := expect_content(t, content, odid3.Chapter)
 	testing.expect_value(t, outer.frames[0].id, "CHAP")
-	nested, nested_err := odid3.decode_frame(&outer.frames[0], .V2_4, context.temp_allocator)
-	testing.expect_value(t, nested_err, nil)
-	testing.expect_value(t, expect_content(t, nested, odid3.Chapter).element_id, "ch1")
+	testing.expect_value(t, outer.frames[0].problem, odid3.Frame_Problem.Nested_Chapter)
+	_, nested_err := odid3.decode_frame(&outer.frames[0], .V2_4, context.temp_allocator)
+	testing.expect_value(t, nested_err, odid3.Error(odid3.Format_Error.Not_Decodable))
 }
 
 @(test)
