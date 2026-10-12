@@ -241,3 +241,55 @@ set_encoding_allocation_failures :: proc(t: ^testing.T) {
 		testing.expectf(t, succeeded, "%s never succeeded", name)
 	}
 }
+
+@(test)
+encoding_as_a_write_option :: proc(t: ^testing.T) {
+	for c in ([]struct {
+			name:     string,
+			encoding: odid3.Encoding,
+		}{{"v23_full.mp3", .UTF16}, {"v23_unicode.mp3", .UTF16}, {"v24_full.mp3", .UTF16BE}, {"v24_unicode.mp3", .UTF8}, {"v24_unicode.mp3", .Latin1}}) {
+		tags := read(t, fixture(t, c.name))
+		defer odid3.destroy(&tags)
+		before := all_fields(&tags.v2)
+		data := make([][]u8, len(tags.v2.frames), context.temp_allocator)
+		for f, i in tags.v2.frames {
+			data[i] = f.data
+		}
+		rendered, err := odid3.render(&tags.v2, {encoding = c.encoding}, context.temp_allocator)
+		if c.encoding == .Latin1 {
+			// Not every character of the unicode fixture fits in Latin-1: nothing is written.
+			testing.expect_value(t, err, odid3.Error(odid3.Format_Error.Not_Encodable))
+			continue
+		}
+		testing.expect_value(t, err, nil)
+		for f, i in tags.v2.frames {
+			testing.expectf(
+				t,
+				raw_data(f.data) == raw_data(data[i]),
+				"%s: the tag changed",
+				c.name,
+			)
+		}
+		again := read(t, concat(rendered, fixture(t, "no_tag.mp3")))
+		defer odid3.destroy(&again)
+		testing.expect_value(t, all_fields(&again.v2), before)
+		for &f in again.v2.frames {
+			content, decode_err := odid3.decode_frame(&f, again.v2.version, context.temp_allocator)
+			if text, is_text := content.(odid3.Text); is_text && decode_err == nil {
+				testing.expectf(
+					t,
+					text.encoding == c.encoding,
+					"%s: %s in %v",
+					c.name,
+					f.id,
+					text.encoding,
+				)
+			}
+		}
+	}
+
+	tags := read(t, fixture(t, "v23_full.mp3"))
+	defer odid3.destroy(&tags)
+	_, err := odid3.render(&tags.v2, {encoding = .UTF8}, context.temp_allocator)
+	testing.expect_value(t, err, odid3.Error(odid3.Format_Error.Encoding_Not_In_Version))
+}

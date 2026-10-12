@@ -32,6 +32,7 @@ INTEROP_CASES := []Interop_Case {
 	{"v23", .V2_3, {}, nil, .None, true},
 	{"v23_latin1", .V2_3, {}, .Latin1, .None, true},
 	{"v23_utf16", .V2_3, {}, .UTF16, .None, true},
+	{"v23_utf16_option", .V2_3, {encoding = .UTF16}, nil, .None, true},
 	{"v23_unsync", .V2_3, {unsynchronisation = true}, nil, .None, false},
 	{"v23_compressed", .V2_3, {compression = true}, nil, .None, false},
 	{"v23_no_padding", .V2_3, {padding = 0}, nil, .None, true},
@@ -40,6 +41,7 @@ INTEROP_CASES := []Interop_Case {
 	{"v24_latin1", .V2_4, {}, .Latin1, .None, true},
 	{"v24_utf16", .V2_4, {}, .UTF16, .None, true},
 	{"v24_utf16be", .V2_4, {}, .UTF16BE, .None, true},
+	{"v24_utf16be_option", .V2_4, {encoding = .UTF16BE}, nil, .None, true},
 	{"v24_unsync", .V2_4, {unsynchronisation = true}, nil, .None, true},
 	{"v24_compressed", .V2_4, {compression = true}, nil, .None, true},
 	{
@@ -108,6 +110,9 @@ interop_picture :: proc() -> []u8 {
 // (Latin-1), else UTF-8 in ID3v2.4, else Latin-1 when the text fits.
 interop_encoding :: proc(c: Interop_Case, id: string) -> odid3.Encoding {
 	if encoding, ok := c.encoding.?; ok {
+		return encoding
+	}
+	if encoding, ok := c.options.encoding.?; ok {
 		return encoding
 	}
 	if id == "APIC" || id == "PIC" {

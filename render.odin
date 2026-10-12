@@ -18,6 +18,10 @@ Write_Options :: struct {
 	// Allow rewriting a file whose tag was read with damage warnings (see write_file), and
 	// rendering a tag whose frames could not be read at all (a compressed ID3v2.2 tag).
 	replace_damaged:   bool,
+	// The text encoding of every ID3v2 frame that holds text, chapters included; nil keeps each
+	// frame's. The frames are re-encoded as set_encoding does, on a copy: an encoding the version
+	// lacks gives Encoding_Not_In_Version, text the encoding cannot hold Not_Encodable.
+	encoding:          Maybe(Encoding),
 	// The text encoding of ID3v1; nil keeps that of tags.v1 (UTF-8 when its text was read as
 	// UTF-8). sync_v1 and v1_from_tag do not see it: give them the same encoding to know what
 	// does not fit.
@@ -38,9 +42,9 @@ MAX_TAG_SIZE :: 1 << 28 - 1
 // ones), reserved flag bits cleared, compression and unsynchronisation as the write options and
 // the frames ask, the size limit applying to the tag as written. A compressed frame is compressed
 // again with odid3's encoder: its content stays, its bytes may differ. Encrypted and badly
-// compressed frames are written back as stored. A frame read from a file keeps its text encoding
-// even when its version lacks it (some taggers wrote UTF-8 in ID3v2.3); a new frame must use one
-// the version has. The header keeps the revision and the experimental flag; the extended header is
+// compressed frames are written back as stored. A frame read from a file keeps its text encoding,
+// unless Write_Options.encoding asks for another, even when its version lacks it (some taggers
+// wrote UTF-8 in ID3v2.3); a new frame must use one the version has. The header keeps the revision and the experimental flag; the extended header is
 // not written, nor ID3v2.4's SEEK, whose offset to a next tag no longer holds once the tag is
 // rewritten.
 render :: proc(
@@ -53,6 +57,14 @@ render :: proc(
 ) {
 	if tag.version != .V2_2 && tag.version != .V2_3 && tag.version != .V2_4 {
 		return nil, .No_Version
+	}
+	if encoding, forced := options.encoding.?; forced {
+		work := clone_tag(tag, allocator) or_return
+		defer destroy_tag(&work)
+		set_tag_encoding(&work, encoding) or_return
+		as_set := options
+		as_set.encoding = nil
+		return render(&work, as_set, allocator)
 	}
 	footer := options.footer
 	unsync := options.unsynchronisation
