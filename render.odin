@@ -1,12 +1,18 @@
 package odid3
 
-// How to write a tag.
+// How to write a tag. The tag header's flags come from these options and from the frames; of the
+// flags read, only the experimental one is kept.
 Write_Options :: struct {
-	padding:         Maybe(int), // zeros after the frames; nil means DEFAULT_PADDING, below 0 none
-	footer:          bool, // ID3v2.4 only; the spec forbids padding with a footer, so there is none
+	// Zeros after the frames; nil means DEFAULT_PADDING, below 0 none.
+	padding:           Maybe(int),
+	// ID3v2.4 only; the spec forbids padding with a footer, so there is none.
+	footer:            bool,
+	// The whole tag; ID3v2.4 frames can also ask for it one by one. ffmpeg misreads the frames of
+	// ID3v2.2 and 2.3 tags written so, after the first byte unsynchronisation inserts.
+	unsynchronisation: bool,
 	// Allow rewriting a file whose tag was read with damage warnings (see write_file), and
 	// rendering a tag whose frames could not be read at all (a compressed ID3v2.2 tag).
-	replace_damaged: bool,
+	replace_damaged:   bool,
 }
 
 // The padding written when Write_Options.padding is nil: room for later edits to fit without
@@ -20,8 +26,9 @@ MAX_TAG_SIZE :: 1 << 28 - 1
 // allocator and owned by the caller, who frees them with delete. Each frame keeps its status and
 // format flags and the bytes they need, so a frame read from a file comes out byte for byte, but
 // for what the version writes its own way: syncsafe sizes in ID3v2.4 (where old iTunes wrote plain
-// ones), reserved flag bits cleared, and compression and unsynchronisation as the write options
-// say. Encrypted and badly compressed frames are written back as stored. A frame read from a file
+// ones), reserved flag bits cleared, and unsynchronisation as the write options and the ID3v2.4
+// frames ask, the size limit applying to the tag as written. Encrypted and badly compressed frames
+// are written back as stored. A frame read from a file
 // keeps its text encoding even when its version lacks it (some taggers wrote UTF-8 in ID3v2.3); a
 // new frame must use one the version has. The header keeps the revision and the experimental flag;
 // the extended header is not written.
@@ -36,7 +43,9 @@ render :: proc(
 	if tag.version != .V2_2 && tag.version != .V2_3 && tag.version != .V2_4 {
 		return nil, .No_Version
 	}
-	if options.footer && tag.version != .V2_4 {
+	footer := options.footer
+	unsync := options.unsynchronisation
+	if footer && tag.version != .V2_4 {
 		return nil, .Not_In_Version
 	}
 	if .Compression in tag.flags && !options.replace_damaged {
@@ -50,31 +59,56 @@ render :: proc(
 		&out,
 		..[]u8{'I', 'D', '3', tag_major(tag.version), tag.revision, 0, 0, 0, 0, 0},
 	) or_return
+	// Before ID3v2.4 the whole tag is unsynchronised, frame headers included; ID3v2.4 does it frame
+	// by frame.
+	body := &out
+	whole: [dynamic]u8
+	whole.allocator = allocator
+	defer delete(whole)
+	if unsync && tag.version != .V2_4 {
+		body = &whole
+	}
+	every_frame_unsync := tag.version == .V2_4 && len(tag.frames) > 0
 	for &f in tag.frames {
-		render_frame(&out, &f, tag.version) or_return
-		if len(out) - V2_HEADER_SIZE > MAX_TAG_SIZE {
+		render_frame(body, &f, tag.version, unsync) or_return
+		every_frame_unsync &&= frame_unsynchronised(&f)
+		framed := len(body) if body == &whole else len(body) - V2_HEADER_SIZE
+		if framed > MAX_TAG_SIZE {
 			return nil, .Tag_Too_Large
 		}
 	}
-	padding := 0 if options.footer else options.padding.? or_else DEFAULT_PADDING
+	padding := 0 if footer else options.padding.? or_else DEFAULT_PADDING
 	if padding < 0 {
 		padding = 0
 	}
-	if padding > MAX_TAG_SIZE - (len(out) - V2_HEADER_SIZE) {
+	framed := len(body) if body == &whole else len(body) - V2_HEADER_SIZE
+	if padding > MAX_TAG_SIZE - framed {
 		return nil, .Tag_Too_Large
 	}
-	size := len(out) - V2_HEADER_SIZE + padding
-	resize(&out, len(out) + padding) or_return
+	resize(body, len(body) + padding) or_return
+	if body == &whole {
+		if unsynchronised_size(whole[:]) > MAX_TAG_SIZE {
+			return nil, .Tag_Too_Large
+		}
+		unsynchronise(&out, whole[:]) or_return
+	}
+	size := len(out) - V2_HEADER_SIZE
+	if size > MAX_TAG_SIZE {
+		return nil, .Tag_Too_Large
+	}
 	flags: u8
+	if unsync || every_frame_unsync {
+		flags |= 0x80
+	}
 	if .Experimental in tag.flags && tag.version != .V2_2 {
 		flags |= 0x20
 	}
-	if options.footer {
+	if footer {
 		flags |= 0x10
 	}
 	out[5] = flags
 	put_syncsafe(out[6:10], u32(size))
-	if options.footer {
+	if footer {
 		footer: [V2_FOOTER_SIZE]u8
 		copy(footer[:], "3DI")
 		copy(footer[3:], out[3:V2_HEADER_SIZE])
@@ -118,7 +152,12 @@ put_be32 :: proc(b: []u8, n: u32) {
 // A frame read from a file only needs an ID that a reader finds again; a new one, a valid ID and a
 // text encoding its version has.
 @(private)
-render_frame :: proc(out: ^[dynamic]u8, f: ^Frame, version: V2_Version) -> Error {
+render_frame :: proc(
+	out: ^[dynamic]u8,
+	f: ^Frame,
+	version: V2_Version,
+	unsynchronise_all := false,
+) -> Error {
 	if f.problem == .Skipped_Picture {
 		return .Incomplete_Tag
 	}
@@ -140,7 +179,11 @@ render_frame :: proc(out: ^[dynamic]u8, f: ^Frame, version: V2_Version) -> Error
 			return .Encoding_Not_In_Version
 		}
 	}
+	unsync := version == .V2_4 && (unsynchronise_all || frame_unsynchronised(f))
 	format := f.format - {.Unsynchronisation}
+	if unsync {
+		format += {.Unsynchronisation}
+	}
 	if !as_stored {
 		// Compressing on write comes with its own option; the data is written as it is.
 		format -= {.Compression}
@@ -187,7 +230,20 @@ render_frame :: proc(out: ^[dynamic]u8, f: ^Frame, version: V2_Version) -> Error
 		}
 	}
 
-	size := n + len(f.data)
+	payload := f.data
+	stored: [dynamic]u8
+	stored.allocator = out.allocator
+	defer delete(stored)
+	if unsync {
+		// The bytes the flags add and the data are one stream.
+		if unsynchronised_size(extras[:n], f.data) > MAX_TAG_SIZE {
+			return .Tag_Too_Large
+		}
+		unsynchronise(&stored, extras[:n], f.data) or_return
+		n = 0
+		payload = stored[:]
+	}
+	size := n + len(payload)
 	switch version {
 	case .V2_2:
 		if size >= 1 << 24 {
@@ -216,8 +272,15 @@ render_frame :: proc(out: ^[dynamic]u8, f: ^Frame, version: V2_Version) -> Error
 	case .None:
 	}
 	append(out, ..extras[:n]) or_return
-	append(out, ..f.data) or_return
+	append(out, ..payload) or_return
 	return nil
+}
+
+// A frame whose unsynchronisation flag lied was not unsynchronised; it is written plain unless the
+// whole tag is.
+@(private)
+frame_unsynchronised :: proc(f: ^Frame) -> bool {
+	return .Unsynchronisation in f.format && f.problem != .Bad_Unsynchronisation
 }
 
 @(private)

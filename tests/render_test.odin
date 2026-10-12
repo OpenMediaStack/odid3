@@ -13,18 +13,21 @@ unchanged_tags_render_byte_for_byte :: proc(t: ^testing.T) {
 	cases := []struct {
 		name:   string,
 		footer: bool,
+		unsync: bool,
 	} {
-		{"v23_full.mp3", false},
-		{"v24_full.mp3", false},
-		{"v23_cover.mp3", false},
-		{"v23_unicode.mp3", false},
-		{"v24_unicode.mp3", false},
-		{"v23_comm.mp3", false},
-		{"v22.mp3", false},
-		{"v22_pic.mp3", false},
-		{"v23_chapters.mp3", false},
-		{"v24_chapters.mp3", false},
-		{"v24_appended.mp3", true},
+		{"v23_full.mp3", false, false},
+		{"v24_full.mp3", false, false},
+		{"v23_cover.mp3", false, false},
+		{"v23_unicode.mp3", false, false},
+		{"v24_unicode.mp3", false, false},
+		{"v23_comm.mp3", false, false},
+		{"v22.mp3", false, false},
+		{"v22_pic.mp3", false, false},
+		{"v23_chapters.mp3", false, false},
+		{"v24_chapters.mp3", false, false},
+		{"v24_appended.mp3", true, false},
+		{"v23_unsync.mp3", false, true},
+		{"v24_unsync.mp3", false, false},
 	}
 	for c in cases {
 		file := fixture(t, c.name)
@@ -33,7 +36,7 @@ unchanged_tags_render_byte_for_byte :: proc(t: ^testing.T) {
 		r := tags.layout.v2 if tags.layout.v2.size > 0 else tags.layout.v2_appended
 		rendered, err := odid3.render(
 			&tags.v2,
-			{padding = tags.v2.padding, footer = c.footer},
+			{padding = tags.v2.padding, footer = c.footer, unsynchronisation = c.unsync},
 			context.temp_allocator,
 		)
 		testing.expectf(t, err == nil, "%s: %v", c.name, err)
@@ -66,8 +69,8 @@ rendered_tags_read_back_the_same :: proc(t: ^testing.T) {
 			a, b := again.v2.frames[i], tags.v2.frames[i]
 			format := b.format
 			if b.problem == .None {
-				// Compression and unsynchronisation on write come with their own slices.
-				format -= {.Compression, .Unsynchronisation}
+				// Compression on write comes with its own slice.
+				format -= {.Compression}
 			}
 			same :=
 				a.id == b.id &&

@@ -227,6 +227,56 @@ undo_unsynchronisation :: proc(
 	return data[:n], true, nil
 }
 
+// Appends parts, read as one stream, unsynchronised: a 0x00 after every 0xFF followed by 0x00 or a
+// byte of 0xE0 or more, and after a last 0xFF. Room for them is made once.
+@(private)
+unsynchronise :: proc(out: ^[dynamic]u8, parts: ..[]u8) -> runtime.Allocator_Error {
+	at := len(out)
+	resize(out, at + unsynchronised_size(..parts)) or_return
+	for part, p in parts {
+		for c, i in part {
+			out[at] = c
+			at += 1
+			if c == 0xFF && needs_zero(parts, p, i) {
+				out[at] = 0
+				at += 1
+			}
+		}
+	}
+	return nil
+}
+
+// The size of parts once unsynchronised, so that a size limit is checked before anything grows.
+@(private)
+unsynchronised_size :: proc(parts: ..[]u8) -> int {
+	n := 0
+	for part, p in parts {
+		n += len(part)
+		for c, i in part {
+			if c == 0xFF && needs_zero(parts, p, i) {
+				n += 1
+			}
+		}
+	}
+	return n
+}
+
+// Whether the 0xFF at parts[p][i] needs a 0x00 after it: the next byte of the stream is 0x00 or
+// 0xE0 or more, or there is none.
+@(private)
+needs_zero :: proc(parts: [][]u8, p, i: int) -> bool {
+	if i + 1 < len(parts[p]) {
+		next := parts[p][i + 1]
+		return next >= 0xE0 || next == 0
+	}
+	for part in parts[p + 1:] {
+		if len(part) > 0 {
+			return part[0] >= 0xE0 || part[0] == 0
+		}
+	}
+	return true
+}
+
 // Gives a slice shrunk in place its new size in its allocation: some allocators need the size a
 // block was allocated with when it is freed.
 @(private)
@@ -457,6 +507,8 @@ read_frame :: proc(
 		decoded, valid := undo_unsynchronisation(f.data) or_return
 		if valid {
 			f.data = shrink(f.data, len(decoded), allocator) or_return
+			// Flagged in the tag header alone, the frame is unsynchronised all the same.
+			f.format += {.Unsynchronisation}
 		} else {
 			f.problem = .Bad_Unsynchronisation
 		}
