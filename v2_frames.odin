@@ -531,3 +531,36 @@ read_padding :: proc(tag: ^Tag, body: ^Body, start: i64, warnings: ^Warnings) ->
 	}
 	return nil
 }
+
+// Reads the frames inside a CHAP or CTOC frame, laid out as in a tag of the same version. Their
+// offset is -1: they are not read straight from the file.
+@(private)
+read_embedded_frames :: proc(
+	data: []u8,
+	version: V2_Version,
+	allocator: runtime.Allocator,
+) -> (
+	frames: [dynamic]Frame,
+	err: Error,
+) {
+	src := memory_source(data)
+	body := Body {
+		src     = &src,
+		end     = i64(len(data)),
+		version = version,
+	}
+	tag := Tag {
+		version   = version,
+		frames    = make([dynamic]Frame, allocator),
+		allocator = allocator,
+	}
+	warnings: Warnings
+	if err = read_frames(&tag, &body, {}, &warnings); err != nil {
+		destroy_tag(&tag)
+		return nil, err
+	}
+	for &f in tag.frames {
+		f.offset = -1
+	}
+	return tag.frames, nil
+}

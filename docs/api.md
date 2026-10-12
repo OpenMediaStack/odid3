@@ -287,11 +287,19 @@ Chapter :: struct {
 	end_ms:       u32,
 	start_offset: u32, // 0xFFFFFFFF when unused
 	end_offset:   u32,
-	frames:       [dynamic]Frame, // the embedded frames
+	frames:       [dynamic]Frame, // the embedded frames, with offset -1
 }
 
-// User_Text, Url, User_Url, Unique_File_Id, Popularimeter, Play_Counter, Private,
-// Table_Of_Contents and Binary follow their frame's layout in the spec.
+Table_Of_Contents :: struct {
+	element_id: string,
+	top_level:  bool,
+	ordered:    bool,
+	children:   []string, // element IDs
+	frames:     [dynamic]Frame,
+}
+
+// User_Text, Url, User_Url, Unique_File_Id, Popularimeter, Play_Counter, Private and Binary
+// follow their frame's layout in the spec.
 
 // Everything in content is allocated with allocator. Free with destroy.
 decode_frame :: proc(frame: ^Frame, version: V2_Version, allocator := context.allocator) -> (content: Frame_Content, err: Error)
