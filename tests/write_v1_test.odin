@@ -483,3 +483,125 @@ v1_allocation_failures :: proc(t: ^testing.T) {
 		}
 	}
 }
+
+// A 128 byte ID3v1.0 tag holding these field bytes.
+raw_v1 :: proc(title, comment: []u8) -> []u8 {
+	tag := make([]u8, 128, context.temp_allocator)
+	copy(tag, "TAG")
+	copy(tag[3:33], title)
+	copy(tag[33:], "Artist")
+	copy(tag[93:], "1999")
+	copy(tag[97:127], comment)
+	tag[127] = 255
+	return tag
+}
+
+@(test)
+v1_with_both_encodings :: proc(t: ^testing.T) {
+	// A UTF-8 title, as ffmpeg writes it, and a comment a Latin-1 tagger wrote later.
+	comment := text("Caf\xe9 au lait, cr\xe8me br\xfbl\xe9e oui")
+	file := concat(fixture(t, "no_tag.mp3"), raw_v1(text("Caf\xc3\xa9"), comment))
+	tags := read(t, file)
+	defer odid3.destroy(&tags)
+	testing.expect_value(t, tags.v1.title, "Café")
+	testing.expect_value(t, tags.v1.comment, "Café au lait, crème brûlée oui")
+	testing.expect_value(t, tags.v1.encoding, odid3.V1_Encoding.Latin1)
+	tags.v1.genre = 17
+	out, err := odid3.write_bytes(file, &tags, {}, context.temp_allocator)
+	testing.expect_value(t, err, nil)
+	again := read(t, out)
+	defer odid3.destroy(&again)
+	testing.expect_value(t, again.v1.comment, tags.v1.comment)
+	testing.expect_value(t, again.v1.title, "Café")
+
+	// With a field Latin-1 cannot hold, the tag stays UTF-8.
+	cjk := read(t, concat(fixture(t, "no_tag.mp3"), raw_v1(text("坂本"), comment)))
+	defer odid3.destroy(&cjk)
+	testing.expect_value(t, cjk.v1.encoding, odid3.V1_Encoding.UTF8)
+	copied, _ := odid3.clone(&cjk, context.temp_allocator)
+	testing.expect_value(t, copied.v1.encoding, odid3.V1_Encoding.UTF8)
+}
+
+@(test)
+ascii_v1_tags_are_the_same_in_both_encodings :: proc(t: ^testing.T) {
+	padded := proc(s: string) -> []u8 {
+		field := make([]u8, 30, context.temp_allocator)
+		for &c in field {
+			c = ' '
+		}
+		copy(field, s)
+		return field
+	}
+	tag := raw_v1(padded("Title"), padded("Comment"))
+	file := concat(fixture(t, "no_tag.mp3"), tag)
+	tags := read(t, file)
+	defer odid3.destroy(&tags)
+	for encoding in ([]Maybe(odid3.V1_Encoding){nil, .Latin1, .UTF8}) {
+		out, err := odid3.write_bytes(
+			file,
+			&tags,
+			{v1_encoding = encoding},
+			context.temp_allocator,
+		)
+		testing.expect_value(t, err, nil)
+		testing.expectf(t, bytes.equal(out[len(out) - 128:], tag), "%v", encoding)
+	}
+}
+
+@(test)
+utf8_v1_fields_and_the_enhanced_tag :: proc(t: ^testing.T) {
+	x := strings.repeat("x", 29, context.temp_allocator)
+	titles := []string {
+		"",
+		strings.repeat("x", 30, context.temp_allocator),
+		strings.concatenate({x, "é"}, context.temp_allocator),
+		strings.concatenate(
+			{x, "😀", strings.repeat("y", 55, context.temp_allocator), "é"},
+			context.temp_allocator,
+		),
+		strings.repeat("é", 45, context.temp_allocator),
+	}
+	for title, i in titles {
+		v1 := odid3.V1_Tag {
+			version = .V1_0,
+			title = title,
+			artist = "坂本龍一",
+			year = "€9",
+			comment = strings.repeat("ü", 15, context.temp_allocator),
+			genre = 255,
+			encoding = .UTF8,
+			enhanced = odid3.V1_Enhanced{genre = "Música Popular", start_time = "€:01"},
+		}
+		rendered := odid3.render_v1(&v1, context.temp_allocator)
+		file := concat(fixture(t, "no_tag.mp3"), rendered)
+		back := read(t, file)
+		defer odid3.destroy(&back)
+		testing.expectf(t, back.v1.title == title, "title %d: %q", i, back.v1.title)
+		testing.expect_value(t, back.v1.year, "€9")
+		testing.expect_value(t, back.v1.comment, v1.comment)
+		e, _ := back.v1.enhanced.?
+		testing.expect_value(t, e.genre, "Música Popular")
+		testing.expect_value(t, e.start_time, "€:01")
+		out, _ := odid3.write_bytes(file, &back, {}, context.temp_allocator)
+		testing.expectf(t, bytes.equal(out, file), "title %d: bytes not kept", i)
+	}
+
+	// The comment of ID3v1.1 holds 28 bytes, cut between characters.
+	v11 := odid3.V1_Tag {
+		version  = .V1_1,
+		track    = 5,
+		comment  = strings.concatenate(
+			{strings.repeat("c", 27, context.temp_allocator), "é"},
+			context.temp_allocator,
+		),
+		genre    = 255,
+		encoding = .UTF8,
+	}
+	back := read(
+		t,
+		concat(fixture(t, "no_tag.mp3"), odid3.render_v1(&v11, context.temp_allocator)),
+	)
+	defer odid3.destroy(&back)
+	testing.expect_value(t, back.v1.track, 5)
+	testing.expect_value(t, back.v1.comment, strings.repeat("c", 27, context.temp_allocator))
+}

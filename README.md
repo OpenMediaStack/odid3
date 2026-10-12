@@ -105,7 +105,7 @@ retitle :: proc(path, cover_path: string) -> id3.Error {
 
 	overflow := id3.sync_v1(&tags, .Keep) // rewrite ID3v1 where the file has one
 	if .Title in overflow {
-		fmt.println("the ID3v1 title is cut, or loses characters Latin-1 lacks")
+		fmt.println("the ID3v1 title does not fit whole")
 	}
 	return id3.write_file(path, &tags)
 }
@@ -115,7 +115,7 @@ retitle :: proc(path, cover_path: string) -> id3.Error {
 
 A tag read with damage warnings (`DAMAGE_WARNINGS`), or a file holding a second ID3v2 tag, is only rewritten with `Write_Options.replace_damaged`, since what could not be read would be lost: `Damaged_Tag` is the cue to ask. `Error` is a union of `Format_Error`, `os.Error` and `runtime.Allocator_Error`.
 
-An ID3v1 tag whose values are unchanged keeps its bytes. A changed one is written from `tags.v1` in its `encoding`: Latin-1, the spec's (with `?` for what Latin-1 lacks), or UTF-8 when its text was read as UTF-8, as ffmpeg and some taggers write it. `Write_Options.v1_encoding` forces one or the other. `sync_v1` rebuilds ID3v1 from the fields, in the encoding it is given or the one the file had, and returns the fields that do not fit (characters in Latin-1, bytes in UTF-8); on a `clone` of the tags, it previews them.
+An ID3v1 tag whose values are unchanged keeps its bytes. A changed one is written from `tags.v1` in its `encoding`: Latin-1, the spec's (with `?` for what Latin-1 lacks), or UTF-8 when its text was read as UTF-8, as ffmpeg and some taggers write it. `Write_Options.v1_encoding` forces one or the other. `sync_v1` rebuilds ID3v1 from the fields, in the encoding it is given (the same as the write option's, when one is set) or the one the file had, and returns the fields that do not fit (characters in Latin-1, bytes in UTF-8); on a `clone` of the tags, it previews them.
 
 ### Versions and developer options
 

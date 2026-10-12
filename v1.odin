@@ -12,8 +12,8 @@ V1_Version :: enum u8 {
 }
 
 // An ID3v1 tag: the last 128 bytes of a file, its text decoded to UTF-8. Free it with destroy. A
-// tag built by hand sets genre to 255 for none: 0 is Blues. Its fields hold so many characters in
-// Latin-1, so many bytes in UTF-8.
+// tag built by hand sets genre to 255 for none: 0 is Blues. The limits below count characters in
+// Latin-1, bytes in UTF-8.
 V1_Tag :: struct {
 	version:   V1_Version,
 	title:     string, // 30, 90 with the Enhanced TAG
@@ -24,12 +24,13 @@ V1_Tag :: struct {
 	track:     u8, // ID3v1.1 only, 0 when absent
 	genre:     u8, // see genre_name; 255 when absent
 	enhanced:  Maybe(V1_Enhanced),
-	encoding:  V1_Encoding, // UTF8 when its text was read as UTF-8; how render_v1 writes it
+	encoding:  V1_Encoding, // how render_v1 writes it; see V1_Encoding
 	allocator: runtime.Allocator,
 }
 
 // The text encoding of an ID3v1 tag. The spec gives Latin-1; some taggers, ffmpeg among them, write
-// UTF-8.
+// UTF-8. A tag read is UTF8 when its text was read as UTF-8, unless other fields were read as
+// Latin-1 and every field fits Latin-1.
 V1_Encoding :: enum u8 {
 	Latin1,
 	UTF8,
@@ -76,29 +77,35 @@ decode_v1 :: proc(tag, enhanced: []u8, allocator: runtime.Allocator) -> (v1: V1_
 	if has_enhanced {
 		more_title, more_artist, more_album = enhanced[4:64], enhanced[64:124], enhanced[124:184]
 	}
-	utf8_read: bool
-	v1.title = decode_v1_long_text(tag[3:33], more_title, &utf8_read, allocator) or_return
-	v1.artist = decode_v1_long_text(tag[33:63], more_artist, &utf8_read, allocator) or_return
-	v1.album = decode_v1_long_text(tag[63:93], more_album, &utf8_read, allocator) or_return
-	v1.year = decode_v1_text(tag[93:97], &utf8_read, allocator) or_return
+	seen: bit_set[V1_Encoding]
+	v1.title = decode_v1_long_text(tag[3:33], more_title, &seen, allocator) or_return
+	v1.artist = decode_v1_long_text(tag[33:63], more_artist, &seen, allocator) or_return
+	v1.album = decode_v1_long_text(tag[63:93], more_album, &seen, allocator) or_return
+	v1.year = decode_v1_text(tag[93:97], &seen, allocator) or_return
 	if v1.version == .V1_1 {
-		v1.comment = decode_v1_text(tag[97:125], &utf8_read, allocator) or_return
+		v1.comment = decode_v1_text(tag[97:125], &seen, allocator) or_return
 		v1.track = tag[126]
 	} else {
-		v1.comment = decode_v1_text(tag[97:127], &utf8_read, allocator) or_return
+		v1.comment = decode_v1_text(tag[97:127], &seen, allocator) or_return
 	}
 	v1.genre = tag[127]
 	if has_enhanced {
-		v1.enhanced = decode_v1_enhanced(enhanced, &utf8_read, allocator) or_return
+		v1.enhanced = decode_v1_enhanced(enhanced, &seen, allocator) or_return
 	}
-	v1.encoding = .UTF8 if utf8_read else .Latin1
+	if .UTF8 in seen {
+		v1.encoding = .UTF8
+		// Taggers of both kinds edited this tag: Latin-1 keeps every field when they all fit it.
+		if .Latin1 in seen && v1_fits_latin1(&v1) {
+			v1.encoding = .Latin1
+		}
+	}
 	return
 }
 
 @(private)
 decode_v1_enhanced :: proc(
 	enhanced: []u8,
-	utf8_read: ^bool,
+	seen: ^bit_set[V1_Encoding],
 	allocator: runtime.Allocator,
 ) -> (
 	e: V1_Enhanced,
@@ -108,9 +115,9 @@ decode_v1_enhanced :: proc(
 		destroy_v1_enhanced(&e, allocator)
 	}
 	e.speed = enhanced[184]
-	e.genre = decode_v1_text(enhanced[185:215], utf8_read, allocator) or_return
-	e.start_time = decode_v1_text(enhanced[215:221], utf8_read, allocator) or_return
-	e.end_time = decode_v1_text(enhanced[221:227], utf8_read, allocator) or_return
+	e.genre = decode_v1_text(enhanced[185:215], seen, allocator) or_return
+	e.start_time = decode_v1_text(enhanced[215:221], seen, allocator) or_return
+	e.end_time = decode_v1_text(enhanced[221:227], seen, allocator) or_return
 	return
 }
 
@@ -119,7 +126,7 @@ decode_v1_enhanced :: proc(
 @(private)
 decode_v1_long_text :: proc(
 	field, continuation: []u8,
-	utf8_read: ^bool,
+	seen: ^bit_set[V1_Encoding],
 	allocator: runtime.Allocator,
 ) -> (
 	s: string,
@@ -131,18 +138,18 @@ decode_v1_long_text :: proc(
 	if len(text) == len(field) {
 		n += copy(buf[n:], cut_at_nul(continuation))
 	}
-	return decode_v1_text(buf[:n], utf8_read, allocator)
+	return decode_v1_text(buf[:n], seen, allocator)
 }
 
 // ID3v1 text is Latin-1 by the spec, but some taggers (ffmpeg among them) write UTF-8: valid UTF-8
 // with bytes above 0x7F is read as UTF-8, anything else as Latin-1. Those taggers cut at 30 bytes,
 // sometimes inside a character: when only that last character is broken and what comes before is
-// UTF-8 with bytes above 0x7F, the broken character is dropped. utf8_read is set when the text is
-// read as UTF-8.
+// UTF-8 with bytes above 0x7F, the broken character is dropped. seen gets the encoding text beyond
+// ASCII was read in.
 @(private)
 decode_v1_text :: proc(
 	field: []u8,
-	utf8_read: ^bool,
+	seen: ^bit_set[V1_Encoding],
 	allocator: runtime.Allocator,
 ) -> (
 	s: string,
@@ -152,9 +159,10 @@ decode_v1_text :: proc(
 	if !is_ascii(text) {
 		read := text if utf8.valid_string(text) else without_cut_character(text)
 		if !is_ascii(read) && utf8.valid_string(read) {
-			utf8_read^ = true
+			seen^ += {.UTF8}
 			return strings.clone(read, allocator)
 		}
+		seen^ += {.Latin1}
 	}
 	return decode_latin1(transmute([]u8)text, allocator)
 }
@@ -245,7 +253,11 @@ V1_Policy :: enum u8 {
 same_v1 :: proc(a, b: ^V1_Tag) -> bool {
 	a_version, a_track := written_version(a)
 	b_version, b_track := written_version(b)
-	if a_version != b_version || a_track != b_track || a.encoding != b.encoding {
+	if a_version != b_version || a_track != b_track {
+		return false
+	}
+	// ASCII text is the same bytes in both encodings.
+	if a.encoding != b.encoding && !v1_ascii(a) {
 		return false
 	}
 	if a.genre != b.genre {
@@ -269,6 +281,35 @@ same_v1 :: proc(a, b: ^V1_Tag) -> bool {
 	return ea.speed == eb.speed && ea.genre == eb.genre && same_times
 }
 
+@(private)
+v1_ascii :: proc(v1: ^V1_Tag) -> bool {
+	texts := [?]string{v1.title, v1.artist, v1.album, v1.year, v1.comment}
+	for text in texts {
+		if !is_ascii(text) {
+			return false
+		}
+	}
+	e, has_enhanced := v1.enhanced.?
+	return !has_enhanced || is_ascii(e.genre) && is_ascii(e.start_time) && is_ascii(e.end_time)
+}
+
+@(private)
+v1_fits_latin1 :: proc(v1: ^V1_Tag) -> bool {
+	texts := [?]string{v1.title, v1.artist, v1.album, v1.year, v1.comment}
+	for text in texts {
+		if !fits_latin1(text, max(int)) {
+			return false
+		}
+	}
+	e, has_enhanced := v1.enhanced.?
+	return(
+		!has_enhanced ||
+		fits_latin1(e.genre, max(int)) &&
+			fits_latin1(e.start_time, max(int)) &&
+			fits_latin1(e.end_time, max(int)) \
+	)
+}
+
 // The version and track a tag is written with: ID3v1.1 without a track is ID3v1.0, and ID3v1.0
 // has no track.
 @(private)
@@ -284,8 +325,10 @@ written_version :: proc(v1: ^V1_Tag) -> (version: V1_Version, track: u8) {
 
 // The ID3v1 bytes of a tag: 128 bytes, or 355 when it holds an Enhanced TAG, which comes first;
 // nil when its version is .None. Text is written in the tag's encoding, cut to its field: in
-// Latin-1 a character outside it as '?', in UTF-8 without a character cut in two. An ID3v1.1 tag
-// without a track is the same bytes as ID3v1.0 and is written as such.
+// Latin-1 a character outside it as '?', in UTF-8 without a character cut in two, except where the
+// Enhanced TAG continues a field: its first 30 bytes may then end inside a character, which
+// readers of the Enhanced TAG join to the rest, and others show broken. An ID3v1.1 tag without a
+// track is the same bytes as ID3v1.0 and is written as such.
 render_v1 :: proc(
 	v1: ^V1_Tag,
 	allocator := context.allocator,

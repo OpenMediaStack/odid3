@@ -19,7 +19,8 @@ Write_Options :: struct {
 	// rendering a tag whose frames could not be read at all (a compressed ID3v2.2 tag).
 	replace_damaged:   bool,
 	// The text encoding of ID3v1; nil keeps that of tags.v1 (UTF-8 when its text was read as
-	// UTF-8). sync_v1 takes the same choice to report what does not fit.
+	// UTF-8). sync_v1 and v1_from_tag do not see it: give them the same encoding to know what
+	// does not fit.
 	v1_encoding:       Maybe(V1_Encoding),
 }
 
