@@ -37,6 +37,9 @@ read_file :: proc(path: string, allocator := context.allocator) -> (tags: Tags, 
 
 @(private)
 read_source :: proc(src: ^Source, allocator: runtime.Allocator) -> (tags: Tags, err: Error) {
+	defer if err != nil {
+		destroy_tags(&tags)
+	}
 	header: V2_Header
 	tags.layout, header, tags.warnings = locate(src) or_return
 	if tags.layout.v2.size > 0 {
@@ -49,8 +52,13 @@ read_source :: proc(src: ^Source, allocator: runtime.Allocator) -> (tags: Tags, 
 	}
 	if tags.layout.v1.size > 0 {
 		buf: [V1_SIZE]u8
+		enhanced_buf: [V1_ENHANCED_SIZE]u8
 		v1 := source_bytes(src, tags.layout.v1.offset, buf[:]) or_return
-		tags.v1.version = v1_version(v1)
+		enhanced: []u8
+		if tags.layout.v1_enhanced.size > 0 {
+			enhanced = source_bytes(src, tags.layout.v1_enhanced.offset, enhanced_buf[:]) or_return
+		}
+		tags.v1 = decode_v1(v1, enhanced, allocator) or_return
 	}
 	return
 }
@@ -59,11 +67,13 @@ read_source :: proc(src: ^Source, allocator: runtime.Allocator) -> (tags: Tags, 
 destroy :: proc {
 	destroy_tags,
 	destroy_tag,
+	destroy_v1,
 }
 
 // Frees what read_bytes or read_file allocated in tags and resets it.
 destroy_tags :: proc(tags: ^Tags) {
 	destroy_tag(&tags.v2)
+	destroy_v1(&tags.v1)
 	tags^ = {}
 }
 

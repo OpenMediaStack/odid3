@@ -1,5 +1,6 @@
 package odid3_tests
 
+import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:testing"
@@ -100,4 +101,36 @@ make_temp_dir :: proc(t: ^testing.T) -> string {
 join :: proc(dir, name: string) -> string {
 	path, _ := os.join_path({dir, name}, context.temp_allocator)
 	return path
+}
+
+// An allocator that fails once `left` allocations have been made, to test the error paths.
+Failing :: struct {
+	backing: mem.Allocator,
+	left:    int,
+}
+
+failing_allocator :: proc(f: ^Failing) -> mem.Allocator {
+	return {procedure = failing_allocator_proc, data = f}
+}
+
+failing_allocator_proc :: proc(
+	data: rawptr,
+	mode: mem.Allocator_Mode,
+	size, alignment: int,
+	old_memory: rawptr,
+	old_size: int,
+	loc := #caller_location,
+) -> (
+	[]byte,
+	mem.Allocator_Error,
+) {
+	f := (^Failing)(data)
+	#partial switch mode {
+	case .Alloc, .Alloc_Non_Zeroed, .Resize, .Resize_Non_Zeroed:
+		if f.left == 0 {
+			return nil, .Out_Of_Memory
+		}
+		f.left -= 1
+	}
+	return f.backing.procedure(f.backing.data, mode, size, alignment, old_memory, old_size, loc)
 }
