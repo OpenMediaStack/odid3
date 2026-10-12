@@ -65,9 +65,14 @@ decode_text :: proc(
 	case .UTF16, .UTF16BE:
 		return decode_utf16(data, encoding == .UTF16BE, allocator)
 	case .UTF8:
+		data := data
+		if len(data) >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
+			data = data[3:]
+		}
 		if utf8.valid_string(string(data)) {
 			return strings.clone(string(data), allocator)
 		}
+		return decode_latin1(data, allocator)
 	case .Latin1:
 	}
 	return decode_latin1(data, allocator)

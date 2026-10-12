@@ -116,9 +116,11 @@ Binary :: struct {
 	data: []u8,
 }
 
-// Decodes the content of a frame of a tag of the given version. A frame whose data is not its
-// content (encrypted, compressed but not inflated, skipped, too short) gives .Not_Decodable; data that does not
-// follow the frame's layout gives .Bad_Content.
+// Decodes the content of a frame; version is the version of its tag, which decides whether a text
+// frame holds several values (ID3v2.4). The content copies what it needs from the frame and belongs
+// to the caller, who frees it with destroy and the same allocator. A frame whose data is not its
+// content (encrypted, compressed but not inflated, skipped, too short) gives .Not_Decodable; data
+// that does not follow the frame's layout gives .Bad_Content.
 decode_frame :: proc(
 	frame: ^Frame,
 	version: V2_Version,
@@ -143,7 +145,7 @@ decode_frame :: proc(
 	switch {
 	case id == "TXXX" || id == "TXX":
 		content = decode_user_text(data, version, allocator) or_return
-	case len(id) > 0 && id[0] == 'T':
+	case len(id) > 0 && id[0] == 'T' || is_itunes_text_frame(id):
 		content = decode_text_frame(data, version, allocator) or_return
 	case id == "WXXX" || id == "WXX":
 		content = decode_user_url(data, allocator) or_return
@@ -266,12 +268,37 @@ decode_values :: proc(
 		delete_strings(values, allocator)
 	}
 	rest := data
-	for &value in values {
+	order := encoding
+	for &value, i in values {
 		text: []u8
 		text, rest, _ = split_terminated(encoding, rest)
-		value = decode_text(encoding, text, allocator) or_return
+		value = decode_text(order, text, allocator) or_return
+		if i == 0 {
+			order = byte_order_of(order, text)
+		}
 	}
 	return
+}
+
+// ID3v2.4, section 4: all the UTF-16 strings of a frame share one byte order, so a string without a
+// byte order mark follows the order of the first one. Decoding a string as UTF16BE still honours its
+// own byte order mark.
+@(private)
+byte_order_of :: proc(encoding: Encoding, first: []u8) -> Encoding {
+	if encoding == .UTF16 && len(first) >= 2 && first[0] == 0xFE && first[1] == 0xFF {
+		return .UTF16BE
+	}
+	return encoding
+}
+
+// iTunes writes these frames as text frames, with an encoding byte, under IDs outside the T family.
+@(private)
+is_itunes_text_frame :: proc(id: string) -> bool {
+	switch id {
+	case "WFED", "GRP1", "MVNM", "MVIN":
+		return true
+	}
+	return false
 }
 
 @(private)
@@ -314,7 +341,7 @@ decode_user_text :: proc(
 	}
 	description, rest, _ := split_terminated(t.encoding, data[1:])
 	t.description = decode_text(t.encoding, description, allocator) or_return
-	t.values, err = decode_values(t.encoding, rest, version, allocator)
+	t.values, err = decode_values(byte_order_of(t.encoding, description), rest, version, allocator)
 	if err != nil {
 		delete(t.description, allocator)
 	}
@@ -353,7 +380,8 @@ decode_comment :: proc(data: []u8, allocator: runtime.Allocator) -> (c: Comment,
 	copy(c.language[:], data[1:4])
 	description, rest, _ := split_terminated(c.encoding, data[4:])
 	c.description = decode_text(c.encoding, description, allocator) or_return
-	c.text, err = decode_text(c.encoding, first_string(c.encoding, rest), allocator)
+	order := byte_order_of(c.encoding, description)
+	c.text, err = decode_text(order, first_string(c.encoding, rest), allocator)
 	if err != nil {
 		delete(c.description, allocator)
 	}
@@ -393,13 +421,17 @@ decode_picture :: proc(
 		}
 	}
 	p.type = Picture_Type(rest[0])
-	description, image, _ := split_terminated(p.encoding, rest[1:])
+	description, image, terminated := split_terminated(p.encoding, rest[1:])
+	if !terminated {
+		return {}, .Bad_Content
+	}
 	defer if err != nil {
 		delete(p.mime, allocator)
 		delete(p.description, allocator)
 	}
-	if v22 {
-		p.mime = strings.clone(v22_image_mime(string(mime)), allocator) or_return
+	known := v22_image_mime(string(mime)) if v22 else string(mime)
+	if known != string(mime) {
+		p.mime = strings.clone(known, allocator) or_return
 	} else {
 		p.mime = decode_latin1(mime, allocator) or_return
 	}

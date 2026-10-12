@@ -11,7 +11,7 @@ Error :: union #shared_nil {
 	runtime.Allocator_Error,
 }
 
-// What the data asked for cannot give.
+// What a procedure cannot do with the data or the values it was given.
 Format_Error :: enum u8 {
 	None,
 	// decode_frame on a frame whose data is not its content: encrypted, badly compressed, skipped,
