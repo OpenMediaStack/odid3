@@ -337,10 +337,10 @@ crc_bytes = bytes([(crc >> 28) & 0x7F, (crc >> 21) & 0x7F, (crc >> 14) & 0x7F, (
 extended4 = syncsafe(15) + b'\x01\x70' + b'\x00' + b'\x05' + crc_bytes + b'\x01\x21'
 title4 = b'\x03Extended'
 write('v24_extended.mp3', b'\x04\x00\x40', extended4 + b'TIT2' + syncsafe(len(title4)) + b'\x00\x00' + title4)
-text = '﻿' + 'Paper Satellites, a title long enough for 256 bytes. ' * 3
+text = '\ufeff' + 'Paper Satellites, a title long enough for 256 bytes. ' * 3
 title = b'\x01' + text.encode('utf-16-le')[:255]
 assert len(title) == 256
-artist = b'\x01' + '﻿Marlowe Kite'.encode('utf-16-le')
+artist = b'\x01' + '\ufeffMarlowe Kite'.encode('utf-16-le')
 body = b'TIT2' + len(title).to_bytes(4, 'big') + b'\x00\x00' + title
 body += b'TPE1' + len(artist).to_bytes(4, 'big') + b'\x00\x00' + artist
 write('v24_itunes.mp3', b'\x04\x00\x00', body + bytes(100))
