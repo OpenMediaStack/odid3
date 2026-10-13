@@ -155,7 +155,7 @@ An ID3v1 tag whose values are unchanged keeps its bytes. A changed one is writte
 
 ### Versions and developer options
 
-A tag is written in its own version: `tags.v2.version` and `tags.v1.version`. `convert` changes the ID3v2 version and lists the frames it drops or carries only in part; on a `clone`, it previews them.
+A tag is written in its own version: `tags.v2.version` and `tags.v1.version`. `convert` changes the ID3v2 version and lists the frames it drops or carries only in part; on a `clone`, it previews them. It re-encodes only the text the new version cannot hold (UTF-16BE and UTF-8 before ID3v2.4, or people merged into a Latin-1 frame who do not fit Latin-1), in Latin-1 when it fits, else in UTF-16 little endian; the other frames keep their encoding and byte order.
 
 ```odin
 preview := id3.clone(&tags.v2) or_return
