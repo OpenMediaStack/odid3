@@ -1145,7 +1145,8 @@ convert_text :: proc(tag: ^Tag, index: int) -> (ok: bool, err: Error) {
 }
 
 // Joins several values into one with "/"; genre references ("17", "RX") go first in parentheses,
-// as ID3v2.3 writes them, and text that starts with a parenthesis is escaped with another.
+// as ID3v2.3 writes them, and text that starts with a parenthesis is escaped with another. Empty
+// values, which extra terminators give, are dropped.
 @(private)
 join_values :: proc(values: ^[]string, genres: bool, allocator: runtime.Allocator) -> Error {
 	reference :: proc(genres: bool, value: string) -> bool {
@@ -1157,6 +1158,7 @@ join_values :: proc(values: ^[]string, genres: bool, allocator: runtime.Allocato
 	size, texts := 0, 0
 	for value in values {
 		switch {
+		case value == "":
 		case reference(genres, value):
 			size += len(value) + 2
 		case:
@@ -1175,7 +1177,7 @@ join_values :: proc(values: ^[]string, genres: bool, allocator: runtime.Allocato
 	}
 	texts = 0
 	for value in values {
-		if reference(genres, value) {
+		if value == "" || reference(genres, value) {
 			continue
 		}
 		if texts > 0 {

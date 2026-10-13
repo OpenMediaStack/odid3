@@ -142,7 +142,7 @@ options := id3.Write_Options {
 id3.write_file(path, &tags, options) or_return
 ```
 
-The options apply to every frame; one frame can ask for its own instead: `id3.set_encoding(&frame, tags.v2.version, .UTF16BE)` re-encodes its text, and `frame.format += {.Compression}` (ID3v2.3 and 2.4) or `{.Unsynchronisation}` (ID3v2.4) asks `write_file` to apply it to this frame. To remove a tag, set `tags.v2.version = .None` (or `convert` to `.None`), and `id3.sync_v1(&tags, .Never)` for ID3v1.
+Each frame keeps its text encoding unless asked otherwise: `Write_Options.encoding` writes every text frame in one the version has (UTF-16BE and UTF-8 are ID3v2.4's), without changing the tags, as `id3.set_encoding(&tags.v2, .UTF16)` does in place; before ID3v2.4 it joins several values with "/". Without it, one frame can have its own: `id3.set_encoding(&frame, tags.v2.version, .UTF16BE)` re-encodes its text. The other options apply to every frame too, and one frame can ask for them alone: `frame.format += {.Compression}` (ID3v2.3 and 2.4) or `{.Unsynchronisation}` (ID3v2.4) asks `write_file` to apply it to this frame. To remove a tag, set `tags.v2.version = .None` (or `convert` to `.None`), and `id3.sync_v1(&tags, .Never)` for ID3v1.
 
 ## Development
 
