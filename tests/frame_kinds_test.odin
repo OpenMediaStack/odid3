@@ -1,12 +1,14 @@
 package odid3_tests
 
+import "core:fmt"
 import "core:mem"
+import "core:slice"
 import "core:testing"
 
 import odid3 "../"
 
 @(test)
-every_kind_has_one_id_per_version :: proc(t: ^testing.T) {
+every_kind_has_an_id :: proc(t: ^testing.T) {
 	versions := [?]odid3.V2_Version{.V2_2, .V2_3, .V2_4}
 	for kind in odid3.Frame_Kind {
 		found := false
@@ -23,6 +25,124 @@ every_kind_has_one_id_per_version :: proc(t: ^testing.T) {
 		testing.expectf(t, found, "%v has no ID", kind)
 		_, none := odid3.frame_id(kind, .None)
 		testing.expect(t, !none)
+	}
+}
+
+@(test)
+the_frames_of_each_version :: proc(t: ^testing.T) {
+	// The ID3v2.2 IDs, the frames ID3v2.4 dropped and those it added: every other kind has its own
+	// name as ID in ID3v2.3 and 2.4.
+	v22 := [?]struct {
+		kind: odid3.Frame_Kind,
+		id:   string,
+	} {
+		{.AENC, "CRA"},
+		{.APIC, "PIC"},
+		{.COMM, "COM"},
+		{.CRM, "CRM"},
+		{.EQUA, "EQU"},
+		{.ETCO, "ETC"},
+		{.GEOB, "GEO"},
+		{.GRP1, "GP1"},
+		{.IPLS, "IPL"},
+		{.LNK, "LNK"},
+		{.MCDI, "MCI"},
+		{.MLLT, "MLL"},
+		{.MVIN, "MVI"},
+		{.MVNM, "MVN"},
+		{.PCNT, "CNT"},
+		{.POPM, "POP"},
+		{.RBUF, "BUF"},
+		{.RVAD, "RVA"},
+		{.RVRB, "REV"},
+		{.SYLT, "SLT"},
+		{.SYTC, "STC"},
+		{.TALB, "TAL"},
+		{.TBPM, "TBP"},
+		{.TCMP, "TCP"},
+		{.TCOM, "TCM"},
+		{.TCON, "TCO"},
+		{.TCOP, "TCR"},
+		{.TDAT, "TDA"},
+		{.TDLY, "TDY"},
+		{.TENC, "TEN"},
+		{.TEXT, "TXT"},
+		{.TFLT, "TFT"},
+		{.TIME, "TIM"},
+		{.TIT1, "TT1"},
+		{.TIT2, "TT2"},
+		{.TIT3, "TT3"},
+		{.TKEY, "TKE"},
+		{.TLAN, "TLA"},
+		{.TLEN, "TLE"},
+		{.TMED, "TMT"},
+		{.TOAL, "TOT"},
+		{.TOFN, "TOF"},
+		{.TOLY, "TOL"},
+		{.TOPE, "TOA"},
+		{.TORY, "TOR"},
+		{.TPE1, "TP1"},
+		{.TPE2, "TP2"},
+		{.TPE3, "TP3"},
+		{.TPE4, "TP4"},
+		{.TPOS, "TPA"},
+		{.TPUB, "TPB"},
+		{.TRCK, "TRK"},
+		{.TRDA, "TRD"},
+		{.TSIZ, "TSI"},
+		{.TSO2, "TS2"},
+		{.TSOA, "TSA"},
+		{.TSOC, "TSC"},
+		{.TSOP, "TSP"},
+		{.TSOT, "TST"},
+		{.TSRC, "TRC"},
+		{.TSSE, "TSS"},
+		{.TXXX, "TXX"},
+		{.TYER, "TYE"},
+		{.UFID, "UFI"},
+		{.USLT, "ULT"},
+		{.WCOM, "WCM"},
+		{.WCOP, "WCP"},
+		{.WOAF, "WAF"},
+		{.WOAR, "WAR"},
+		{.WOAS, "WAS"},
+		{.WPUB, "WPB"},
+		{.WXXX, "WXX"},
+	}
+	v23_only := [?]odid3.Frame_Kind{.EQUA, .IPLS, .RVAD, .TDAT, .TIME, .TORY, .TRDA, .TSIZ, .TYER}
+	v24_only := [?]odid3.Frame_Kind {
+		.ASPI,
+		.EQU2,
+		.RVA2,
+		.SEEK,
+		.SIGN,
+		.TDEN,
+		.TDOR,
+		.TDRC,
+		.TDRL,
+		.TDTG,
+		.TIPL,
+		.TMCL,
+		.TMOO,
+		.TPRO,
+		.TSST,
+	}
+	in_v22: [odid3.Frame_Kind]string
+	for p in v22 {
+		in_v22[p.kind] = p.id
+	}
+	for kind in odid3.Frame_Kind {
+		name := fmt.tprint(kind)
+		v22_alone := kind == .CRM || kind == .LNK
+		want := [3]string {
+			in_v22[kind],
+			"" if v22_alone || slice.contains(v24_only[:], kind) else name,
+			"" if v22_alone || slice.contains(v23_only[:], kind) else name,
+		}
+		for version, i in ([?]odid3.V2_Version{.V2_2, .V2_3, .V2_4}) {
+			id, _ := odid3.frame_id(kind, version)
+			testing.expectf(t, id == want[i], "%v in %v: %q, want %q", kind, version, id, want[i])
+		}
 	}
 }
 
@@ -67,7 +187,7 @@ frames_found_by_kind :: proc(t: ^testing.T) {
 	for name in fixture_names(t) {
 		tags := read(t, fixture(t, name))
 		defer odid3.destroy(&tags)
-		for &f, i in tags.v2.frames {
+		for f, i in tags.v2.frames {
 			kind, known := odid3.frame_kind(f.id, tags.v2.version)
 			if !known {
 				continue

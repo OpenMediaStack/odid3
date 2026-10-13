@@ -19,8 +19,8 @@ Format_Error :: enum u8 {
 	Not_Decodable,
 	// Frame data that does not follow the layout of its frame.
 	Bad_Content,
-	// A tag whose version is .None where one is needed: rendering, setting a field, encoding a
-	// frame.
+	// A version that is .None where one is needed: rendering a tag, setting a field, encoding a
+	// frame, making one from a kind.
 	No_Version,
 	// A tag over 256 MB (the largest size a syncsafe integer holds), or a frame over the largest
 	// size its version can write.
@@ -35,7 +35,8 @@ Format_Error :: enum u8 {
 	// language that is not 3 letters.
 	Bad_Value,
 	// Something the version does not have: a footer before ID3v2.4, compression or a frame written
-	// as stored in ID3v2.2, a date part ID3v2.3 cannot hold, a MIME type ID3v2.2 has no name for.
+	// as stored in ID3v2.2, a date part ID3v2.3 cannot hold, a MIME type ID3v2.2 has no name for, a
+	// frame of a kind the version does not have (make_frame).
 	Not_In_Version,
 	// Writing or converting a tag whose frames were not all read: pictures skipped with
 	// skip_picture_data, the frames of a compressed ID3v2.2 tag (which replace_damaged lets render

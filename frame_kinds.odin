@@ -2,8 +2,9 @@ package odid3
 
 // The frames odid3 knows, named after their ID3v2.3 or 2.4 ID: those of the ID3v2.2, 2.3 and 2.4
 // specs, the chapters addendum's (CHAP, CTOC) and iTunes' own. CRM and LNK are ID3v2.2's alone,
-// LNK because its layout is not LINK's. frame_id gives a kind's ID in each version; frames of any
-// other ID are kept all the same, under their Frame.id.
+// LNK because it names the frame it links to by an ID3v2.2 ID, where LINK names one of ID3v2.3 or
+// 2.4. frame_id gives a kind's ID in each version; frames of any other ID are kept all the same,
+// under their Frame.id. Kinds added later may renumber the others: store IDs, not kind values.
 Frame_Kind :: enum u8 {
 	AENC,
 	APIC,
@@ -116,8 +117,8 @@ Frame_Kind :: enum u8 {
 }
 
 // A kind's ID in a version; ok is false when the version does not have the frame: ID3v2.2 has no
-// CTOC, ID3v2.3 no TDRC, ID3v2.4 no TYER. iTunes' own frames count in the versions iTunes writes
-// them in (TSOP in ID3v2.3, TSP in ID3v2.2).
+// CTOC, ID3v2.3 no TDRC, ID3v2.4 no TYER. iTunes' frames count in the versions iTunes writes them
+// in: TCMP in ID3v2.3 and 2.4, TCP in ID3v2.2, and ID3v2.4's TSOP in ID3v2.3 too.
 frame_id :: proc(kind: Frame_Kind, version: V2_Version) -> (id: string, ok: bool) {
 	switch version {
 	case .V2_2:
@@ -131,9 +132,10 @@ frame_id :: proc(kind: Frame_Kind, version: V2_Version) -> (id: string, ok: bool
 	return id, id != ""
 }
 
-// The kind of a frame ID read in a tag of a version; ok is false for an ID odid3 does not know. A
-// 4 letter ID has the same kind in ID3v2.3 and 2.4 tags, so a TDRC read in an ID3v2.3 tag, which
-// that version does not have, is still .TDRC.
+// The kind of a frame ID read in a tag of a version; ok is false for an ID odid3 does not know,
+// and for one of the wrong length: 3 letters in an ID3v2.2 tag, 4 in ID3v2.3 and 2.4 tags, which
+// share their 4 letter IDs (a TDRC read in an ID3v2.3 tag, which that version does not have, is
+// still .TDRC). No ID has a kind in a tag of version .None.
 frame_kind :: proc(id: string, version: V2_Version) -> (kind: Frame_Kind, ok: bool) {
 	if id == "" {
 		return
@@ -172,7 +174,7 @@ Frame_Ids :: struct {
 
 // From the specs, the chapters addendum and the frames iTunes writes; "" where a version has no
 // such frame.
-@(private, rodata)
+@(private = "file", rodata)
 FRAME_IDS := [Frame_Kind]Frame_Ids {
 	.AENC = {v22 = "CRA", v23 = "AENC", v24 = "AENC"},
 	.APIC = {v22 = "PIC", v23 = "APIC", v24 = "APIC"},

@@ -702,16 +702,16 @@ change_picture_layout :: proc(
 // The ID3v2.3 ID of an ID3v2.2 frame, "" for one ID3v2.3 has no counterpart for (CRM, LNK).
 @(private)
 v22_to_v23 :: proc(id: string) -> string {
-	return renamed(id, .V2_2, .V2_3)
+	return counterpart(id, .V2_2, .V2_3)
 }
 
 @(private)
 v23_to_v22 :: proc(id: string) -> string {
-	return renamed(id, .V2_3, .V2_2)
+	return counterpart(id, .V2_3, .V2_2)
 }
 
 @(private = "file")
-renamed :: proc(id: string, from, to: V2_Version) -> string {
+counterpart :: proc(id: string, from, to: V2_Version) -> string {
 	kind, known := frame_kind(id, from)
 	if !known {
 		return ""

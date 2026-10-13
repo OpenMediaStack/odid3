@@ -85,7 +85,7 @@ is_stored :: proc(f: ^Frame) -> bool {
 // The first frame with this ID or of this kind at or after start. A kind is looked for under its ID
 // in the tag's version; in ID3v2.3 and 2.4 tags, which can hold one another's frames, under its 4
 // letter ID even when the version does not have the frame (a TDRC in an ID3v2.3 tag). A kind
-// ID3v2.2 has no ID for is never in an ID3v2.2 tag.
+// ID3v2.2 has no ID for is never in an ID3v2.2 tag, and no kind is in a tag of version .None.
 find_frame :: proc {
 	find_frame_by_id,
 	find_frame_by_kind,
@@ -112,7 +112,8 @@ find_frame_by_kind :: proc(tag: ^Tag, kind: Frame_Kind, start := 0) -> (index: i
 
 // A new frame with copies of id and data, owned by allocator; its offset is -1. Made from a kind,
 // it takes the kind's ID in version, and gives .Not_In_Version when the version does not have the
-// frame (see frame_id), .No_Version for .None.
+// frame (see frame_id), .No_Version for .None. data is the caller's, in that version's layout: a
+// PIC holds a 3 letter image format where an APIC holds a MIME type.
 make_frame :: proc {
 	make_frame_by_id,
 	make_frame_by_kind,
