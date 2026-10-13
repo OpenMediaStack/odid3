@@ -166,14 +166,18 @@ next_utf16_rune :: proc(data: []u8, i: ^int, big_endian: bool) -> (r: rune, ok: 
 	return r, true
 }
 
-// Whether text, read as decode_text reads it, holds no UTF-16 surrogate without its pair. Decoding
-// gives U+FFFD for one, which cannot be told from a real U+FFFD once decoded.
+// Whether text, read as decode_text reads it, decodes whole: in UTF-16, no surrogate without its
+// pair, which decodes as U+FFFD like a real U+FFFD, and no odd last byte, which decoding drops,
+// other than a NUL (half of the two byte terminator, which some writers end UTF-16 text with).
 @(private)
-surrogates_paired :: proc(encoding: Encoding, data: []u8) -> bool {
+decodes_whole :: proc(encoding: Encoding, data: []u8) -> bool {
 	if encoding != .UTF16 && encoding != .UTF16BE {
 		return true
 	}
 	text, big_endian := after_byte_order_mark(data, encoding == .UTF16BE)
+	if len(text) % 2 == 1 && text[len(text) - 1] != 0 {
+		return false
+	}
 	for i := 0; i + 1 < len(text); {
 		if _, ok := next_utf16_rune(text, &i, big_endian); !ok {
 			return false

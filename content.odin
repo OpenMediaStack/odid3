@@ -1166,35 +1166,35 @@ reencoded :: proc(
 	return replacement, true, false, nil
 }
 
-// Whether a frame's text decoded whole: nothing but a final terminator follows the text of a
-// comment or the URL of a WXXX, and no UTF-16 string, read in the byte order decoding reads it
-// in, holds a surrogate without its pair (which decodes as U+FFFD, like a real U+FFFD).
+// Whether a frame's text decoded whole: nothing but NULs (a final terminator, sometimes doubled)
+// follows the text of a comment or the URL of a WXXX, and every string decodes whole, read in the
+// byte order decoding reads it in.
 @(private)
 text_survives :: proc(f: ^Frame, content: ^Frame_Content) -> bool {
 	encoding, _ := encoding_of(f.data[0])
 	text, _, _ := text_of(f)
 	switch _ in content {
 	case Text:
-		return values_paired(encoding, text)
+		return values_whole(encoding, text)
 	case User_Text:
 		description, values, _ := split_terminated(encoding, text)
 		return(
-			surrogates_paired(encoding, description) &&
-			values_paired(byte_order_of(encoding, description), values) \
+			decodes_whole(encoding, description) &&
+			values_whole(byte_order_of(encoding, description), values) \
 		)
 	case User_Url:
 		description, url, _ := split_terminated(encoding, text)
 		_, after, _ := split_terminated(.Latin1, url)
-		return surrogates_paired(encoding, description) && len(after) == 0
+		return decodes_whole(encoding, description) && only_nuls(after)
 	case Picture:
-		return surrogates_paired(encoding, first_string(encoding, text))
+		return decodes_whole(encoding, first_string(encoding, text))
 	case Comment:
 		description, rest, _ := split_terminated(encoding, text)
 		comment, after, _ := split_terminated(encoding, rest)
 		return(
-			surrogates_paired(encoding, description) &&
-			surrogates_paired(byte_order_of(encoding, description), comment) &&
-			len(after) == 0 \
+			decodes_whole(encoding, description) &&
+			decodes_whole(byte_order_of(encoding, description), comment) &&
+			only_nuls(after) \
 		)
 	case Url,
 	     Unique_File_Id,
@@ -1208,19 +1208,28 @@ text_survives :: proc(f: ^Frame, content: ^Frame_Content) -> bool {
 	return true
 }
 
-// Whether the values of a text frame, read as decode_values reads them in ID3v2.4, pair their
-// surrogates.
+// Whether the values of a text frame, read as decode_values reads them in ID3v2.4, decode whole.
 @(private)
-values_paired :: proc(encoding: Encoding, data: []u8) -> bool {
+values_whole :: proc(encoding: Encoding, data: []u8) -> bool {
 	order := encoding
 	for rest, first := data, true; len(rest) > 0; first = false {
 		value: []u8
 		value, rest, _ = split_terminated(encoding, rest)
-		if !surrogates_paired(order, value) {
+		if !decodes_whole(order, value) {
 			return false
 		}
 		if first {
 			order = byte_order_of(order, value)
+		}
+	}
+	return true
+}
+
+@(private)
+only_nuls :: proc(data: []u8) -> bool {
+	for c in data {
+		if c != 0 {
+			return false
 		}
 	}
 	return true
