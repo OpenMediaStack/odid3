@@ -31,7 +31,9 @@ Drop_Reason :: enum u8 {
 	Tag_Removed,
 	// Converted, but part of its value has no place in the target version: a date's seconds or a
 	// month without its day in ID3v2.3, values after the first, the group of a frame merged into
-	// a frame of another group.
+	// a frame of another group; or re-encoded without what its text held that does not decode
+	// (bytes after a comment, lyrics or the URL of a WXXX, a UTF-16 surrogate without its pair,
+	// which becomes U+FFFD).
 	Partly_Converted,
 }
 
@@ -186,7 +188,7 @@ convert_frames :: proc(
 	convert_original_year(tag, dropped, allocator) or_return
 	convert_people(tag, dropped, allocator) or_return
 	for i := 0; i < len(tag.frames); {
-		if convert_text(tag, i) or_return {
+		if convert_text(tag, i, dropped, allocator) or_return {
 			i += 1
 		} else {
 			drop(tag, i, .Not_Encodable, dropped, allocator) or_return
@@ -1078,9 +1080,18 @@ date_to_v23 :: proc(
 
 // Re-encodes a text frame its new version cannot hold as it is: an encoding the version lacks,
 // or, before ID3v2.4, several values, which ID3v2.3 joins with "/" (genre references go in
-// parentheses before the rest). ok is false when such a frame cannot be decoded and encoded again.
+// parentheses before the rest). ok is false when such a frame cannot be decoded and encoded again;
+// one whose text does not decode whole is re-encoded without what is lost, and listed.
 @(private)
-convert_text :: proc(tag: ^Tag, index: int) -> (ok: bool, err: Error) {
+convert_text :: proc(
+	tag: ^Tag,
+	index: int,
+	dropped: ^Dropped_Frames,
+	allocator: runtime.Allocator,
+) -> (
+	ok: bool,
+	err: Error,
+) {
 	f := &tag.frames[index]
 	if is_stored(f) || !has_encoding_byte(f.id) || len(f.data) == 0 {
 		return true, nil
@@ -1135,6 +1146,9 @@ convert_text :: proc(tag: ^Tag, index: int) -> (ok: bool, err: Error) {
 	}
 	if !changed {
 		return true, nil
+	}
+	if !text_survives(f, &content) {
+		note(dropped, f.id, .Partly_Converted, allocator) or_return
 	}
 	replacement := encode_frame(content, f.id, tag.version, tag.allocator) or_return
 	replacement.status = f.status
