@@ -72,6 +72,7 @@ The repository root is the `odid3` package, which a program imports by path, for
 | `genres.odin` | The ID3v1 genre table and `TCON` genre references. |
 | `v2_header.odin` | The ID3v2 header, extended header and footer. |
 | `v2_frames.odin` | Splitting a tag into frames: frame headers, flags, unsynchronisation, data length indicator, grouping, compression, encryption. |
+| `frame_kinds.odin` | `Frame_Kind`: the frames odid3 knows, and their ID in each version. |
 | `content.odin` | Decoding and encoding frame contents (text, URLs, comments, pictures, chapters...). |
 | `text.odin` | The four text encodings, Latin-1 and UTF-16 conversions. |
 | `fields.odin` | Typed accessors: the common fields, pictures, user text. |
@@ -193,3 +194,4 @@ Florent's answers to the questions the plan raised:
 14. **Encodings in a conversion**: `convert` re-encodes only the text the target version cannot hold. A frame it rebuilds for another reason (values joined with "/" before ID3v2.4, a picture between `APIC` and `PIC`, people, dates) keeps its encoding and UTF-16 byte order when the target has that encoding and it holds the text (people merged from several frames take the first one's); otherwise the text is written in Latin-1 when it fits, else in UTF-16 little endian, as decision 10 wants for re-encoded frames.
 15. **Flags ID3v2.2 has no room for**: converting to ID3v2.2 drops the encrypted, grouped and too short frames first, under their own IDs, before the others take ID3v2.3's form: a grouped `TDRC` is listed once as `TDRC`, not as the `TYER`, `TDAT` and `TIME` it would become, and a grouped `TIPL` or `TMCL` is dropped alone, neither taking the other's people with it nor kept in it.
 16. **The library on its own**: the repository describes odid3 without naming a program that uses it, its fixtures included.
+17. **Frame kinds**: `Frame_Kind` names the frames of the ID3v2.2, 2.3 and 2.4 specs, of the chapters addendum and iTunes' own, after their ID3v2.3 or 2.4 ID, with their ID in each version; iTunes' frames count in the versions iTunes writes them in (`TSOP` in ID3v2.3). Looking for a kind in a tag whose version cannot hold it finds nothing; making a frame of a kind the version does not have gives `.Not_In_Version`, as any single request the version cannot take; a whole tag goes to another version with `convert`, whose list says what does not fit. `Frame.id` stays a string, and the procedures that take an ID keep it, for the frames odid3 does not know.

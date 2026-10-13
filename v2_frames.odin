@@ -82,8 +82,17 @@ is_stored :: proc(f: ^Frame) -> bool {
 	)
 }
 
-// The first frame with this ID at or after start.
-find_frame :: proc(tag: ^Tag, id: string, start := 0) -> (index: int, ok: bool) {
+// The first frame with this ID or of this kind at or after start. A kind is looked for under its ID
+// in the tag's version; in ID3v2.3 and 2.4 tags, which can hold one another's frames, under its 4
+// letter ID even when the version does not have the frame (a TDRC in an ID3v2.3 tag). A kind
+// ID3v2.2 has no ID for is never in an ID3v2.2 tag.
+find_frame :: proc {
+	find_frame_by_id,
+	find_frame_by_kind,
+}
+
+// See find_frame.
+find_frame_by_id :: proc(tag: ^Tag, id: string, start := 0) -> (index: int, ok: bool) {
 	for i in max(start, 0) ..< len(tag.frames) {
 		if tag.frames[i].id == id {
 			return i, true
@@ -92,8 +101,25 @@ find_frame :: proc(tag: ^Tag, id: string, start := 0) -> (index: int, ok: bool) 
 	return -1, false
 }
 
-// A new frame with copies of id and data, owned by allocator; its offset is -1.
-make_frame :: proc(
+// See find_frame.
+find_frame_by_kind :: proc(tag: ^Tag, kind: Frame_Kind, start := 0) -> (index: int, ok: bool) {
+	id := id_in_tag(kind, tag.version)
+	if id == "" {
+		return -1, false
+	}
+	return find_frame_by_id(tag, id, start)
+}
+
+// A new frame with copies of id and data, owned by allocator; its offset is -1. Made from a kind,
+// it takes the kind's ID in version, and gives .Not_In_Version when the version does not have the
+// frame (see frame_id), .No_Version for .None.
+make_frame :: proc {
+	make_frame_by_id,
+	make_frame_by_kind,
+}
+
+// See make_frame.
+make_frame_by_id :: proc(
 	id: string,
 	data: []u8,
 	allocator := context.allocator,
@@ -116,6 +142,26 @@ make_frame :: proc(
 		copy(frame.data, data)
 	}
 	return
+}
+
+// See make_frame.
+make_frame_by_kind :: proc(
+	kind: Frame_Kind,
+	data: []u8,
+	version: V2_Version,
+	allocator := context.allocator,
+) -> (
+	frame: Frame,
+	err: Error,
+) {
+	if version == .None {
+		return {}, .No_Version
+	}
+	id, ok := frame_id(kind, version)
+	if !ok {
+		return {}, .Not_In_Version
+	}
+	return make_frame_by_id(id, data, allocator)
 }
 
 // Adds a frame at the end of a tag, which takes ownership of it.
