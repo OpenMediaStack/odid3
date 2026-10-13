@@ -832,6 +832,50 @@ chapters_follow_the_version :: proc(t: ^testing.T) {
 }
 
 @(test)
+unknown_encodings_inside_chapters :: proc(t: ^testing.T) {
+	// A frame whose encoding byte is above 3 (a damaged file) stays as it is through a conversion,
+	// inside a CHAP or CTOC as at top level, and the chapter converts.
+	for major in ([]u8{3, 4}) {
+		to: odid3.V2_Version = .V2_4 if major == 3 else .V2_3
+		damaged := frame(major, "TIT2", {0x05, 0x41})
+		table := frame(major, "CTOC", concat(text("toc\x00"), {0x03, 0x00}, damaged))
+		for body in ([][]u8{damaged, chapter_frame(major, "ch0", 0, 10, damaged), table}) {
+			tags := read(t, tag_file(major, 0, body))
+			defer odid3.destroy(&tags)
+			expect_dropped(t, convert(t, &tags.v2, to), {})
+			rendered, err := odid3.render(&tags.v2, {}, context.temp_allocator)
+			testing.expect_value(t, err, nil)
+			again := read(t, rendered)
+			defer odid3.destroy(&again)
+			if len(again.v2.frames) != 1 {
+				testing.expectf(t, false, "%s: %d frames", body[:4], len(again.v2.frames))
+				continue
+			}
+			inside := again.v2.frames[:]
+			if again.v2.frames[0].id != "TIT2" {
+				#partial switch c in decode(t, &again.v2.frames[0], to) {
+				case odid3.Chapter:
+					inside = c.frames[:]
+				case odid3.Table_Of_Contents:
+					inside = c.frames[:]
+				}
+			}
+			testing.expect_value(t, len(inside), 1)
+			if len(inside) == 1 {
+				testing.expectf(
+					t,
+					inside[0].id == "TIT2" && slice.equal(inside[0].data, []u8{0x05, 0x41}),
+					"%s: %s %x",
+					body[:4],
+					inside[0].id,
+					inside[0].data,
+				)
+			}
+		}
+	}
+}
+
+@(test)
 compressed_and_encrypted_frames_keep_their_size :: proc(t: ^testing.T) {
 	stored := frame(3, "PRIV", concat({0, 0, 0, 20, 0x80}, text("secret")), 0, 0xC0)
 	tags := read(t, tag_file(3, 0, stored))

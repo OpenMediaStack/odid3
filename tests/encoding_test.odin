@@ -419,6 +419,38 @@ frames_with_problems_and_chapters :: proc(t: ^testing.T) {
 		odid3.set_encoding(&refused.v2, odid3.Encoding.Latin1),
 		odid3.Error(odid3.Format_Error.Not_Encodable),
 	)
+
+	// What stays as it is in a frame read at top level stays inside a chapter too, while the
+	// frames beside it change: an unknown encoding byte, and UTF-8 in ID3v2.3 when only the byte
+	// order of UTF-16 changes.
+	latin := frame(3, "TIT2", text("\x00T"))
+	unknown := read(
+		t,
+		tag_file(3, 0, chapter_frame(3, "ch0", 0, 10, frame(3, "TALB", text("\x07abc")), latin)),
+	)
+	defer odid3.destroy(&unknown)
+	_, option_err := odid3.render(&unknown.v2, {encoding = .UTF16}, context.temp_allocator)
+	testing.expect_value(t, option_err, nil)
+	testing.expect_value(t, odid3.set_encoding(&unknown.v2, odid3.Encoding.UTF16), nil)
+	chapter = expect_content(t, decode(t, &unknown.v2.frames[0], .V2_3), odid3.Chapter)
+	testing.expect(
+		t,
+		len(chapter.frames) == 2 &&
+		string(chapter.frames[0].data) == "\x07abc" &&
+		chapter.frames[1].data[0] == 1,
+	)
+	little := frame(3, "TIT2", concat({1}, utf16("T", .Little_Endian)))
+	utf8 := read(
+		t,
+		tag_file(3, 0, chapter_frame(3, "ch0", 0, 10, frame(3, "TALB", text("\x03abc")), little)),
+	)
+	defer odid3.destroy(&utf8)
+	_, order_err := odid3.render(
+		&utf8.v2,
+		{utf16_byte_order = .Big_Endian},
+		context.temp_allocator,
+	)
+	testing.expect_value(t, order_err, nil)
 }
 
 @(test)
