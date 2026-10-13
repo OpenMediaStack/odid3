@@ -17,8 +17,9 @@ Dropped_Frames :: [dynamic]Dropped_Frame
 
 // Why a conversion removed a frame, or carried it only in part.
 Drop_Reason :: enum u8 {
-	// The target version has no frame with this layout (RVA2 in ID3v2.3, RVAD in ID3v2.4...), or
-	// the value has no place there (a second date, a day without its year, a date that is none).
+	// The target version has no such frame (TRDA in ID3v2.4, TMOO in ID3v2.3, CHAP or an unknown
+	// frame in ID3v2.2), none with this layout (RVA2 in ID3v2.3, RVAD in ID3v2.4...), or the value
+	// has no place there (a second date, a day without its year, a date that is none).
 	No_Equivalent,
 	// Encrypted, or compressed in a way that cannot be carried without its key or sizes.
 	Encrypted,
@@ -145,7 +146,7 @@ convert_versions :: proc(
 	}
 	renamed := len(dropped^)
 	if to == .V2_2 {
-		drop_flagged_for_v22(tag, dropped, allocator) or_return
+		drop_what_v22_cannot_hold(tag, dropped, allocator) or_return
 	}
 	// Going to ID3v2.2, an ID3v2.3 tag needs the same care as one from ID3v2.4: dates, people and
 	// text in ID3v2.3's form first.
@@ -558,13 +559,14 @@ restore_v22_ids :: proc(listed: []Dropped_Frame, allocator: runtime.Allocator) -
 	return nil
 }
 
-// ID3v2.2 frames have no flags, so the frames that cannot do without theirs (encrypted, grouped,
-// or shorter than their flags announce) are dropped before the ID3v2.3 step, under their own IDs:
-// that step would split a grouped TDRC into TYER, TDAT and TIME, dropped under IDs the tag does
-// not have, and merge people frames of different groups, a grouped one taking the other's people
-// with it or being kept in it.
+// The frames ID3v2.2 has no place for are dropped before the ID3v2.3 step, under their own IDs:
+// those that cannot do without their flags (encrypted, grouped, or shorter than their flags
+// announce), as ID3v2.2 frames have none, and those it has no frame for (chapters, a PRIV, an
+// unknown frame). That step would split a grouped TDRC into TYER, TDAT and TIME, dropped under IDs
+// the tag does not have, merge people frames of different groups, a grouped one taking the other's
+// people with it or being kept in it, and convert the frames inside chapters, listing them.
 @(private)
-drop_flagged_for_v22 :: proc(
+drop_what_v22_cannot_hold :: proc(
 	tag: ^Tag,
 	dropped: ^Dropped_Frames,
 	allocator: runtime.Allocator,
@@ -578,6 +580,8 @@ drop_flagged_for_v22 :: proc(
 			drop(tag, i, .Encrypted, dropped, allocator) or_return
 		case .Grouping in f.format:
 			drop(tag, i, .Grouped, dropped, allocator) or_return
+		case !has_place_in_v22(f, tag.version):
+			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
 		case:
 			i += 1
 		}
@@ -585,8 +589,15 @@ drop_flagged_for_v22 :: proc(
 	return nil
 }
 
+@(private = "file")
+has_place_in_v22 :: proc(f: ^Frame, version: V2_Version) -> bool {
+	kind, known := frame_kind(f.id, version)
+	return known && kept_in(kind, .V2_2)
+}
+
 // Renames ID3v2.3 frames to their ID3v2.2 IDs, turns APIC into PIC, and drops the frames without
-// an ID3v2.2 ID; drop_flagged_for_v22 has dropped those whose flags ID3v2.2 has no room for.
+// an ID3v2.2 ID, which drop_what_v22_cannot_hold has dropped already but for the frames inside
+// chapters.
 @(private)
 convert_to_v22 :: proc(
 	tag: ^Tag,
@@ -729,16 +740,27 @@ destroy_dropped :: proc(dropped: ^Dropped_Frames, allocator := context.allocator
 	dropped^ = nil
 }
 
-// Frames whose binary layout changed between ID3v2.3 and 2.4.
-@(private, rodata)
-V23_ONLY := Frame_Kinds{.EQUA, .RVAD}
-@(private, rodata)
-V24_ONLY := Frame_Kinds{.EQU2, .RVA2, .ASPI, .SEEK, .SIGN}
+// Whether a frame of this kind has a place in a version: an ID of its own there, or a conversion
+// into frames that have one (the dates, the original year and the people of ID3v2.3 and 2.4).
+@(private)
+kept_in :: proc(kind: Frame_Kind, version: V2_Version) -> bool {
+	if _, has := frame_id(kind, version); has {
+		return true
+	}
+	switch version {
+	case .V2_4:
+		return kind in Frame_Kinds{.TYER, .TDAT, .TIME, .TORY, .IPLS}
+	case .V2_2, .V2_3:
+		return kind in Frame_Kinds{.TDRC, .TDOR, .TIPL, .TMCL}
+	case .None:
+	}
+	return false
+}
 
 @(private)
 conversion_drop :: proc(f: ^Frame, from, to: V2_Version) -> (reason: Drop_Reason, drop_it: bool) {
 	kind, known := frame_kind(f.id, from)
-	if known && (to == .V2_3 && kind in V24_ONLY || to == .V2_4 && kind in V23_ONLY) {
+	if known && !kept_in(kind, to) {
 		return .No_Equivalent, true
 	}
 	if .Discard_On_Tag_Alter in f.status && !known {

@@ -940,8 +940,8 @@ frames_v22_cannot_hold :: proc(t: ^testing.T) {
 	tags := read(t, tag_file(4, 0, frames))
 	defer odid3.destroy(&tags)
 	dropped := convert(t, &tags.v2, .V2_2)
-	// The frames ID3v2.2 has no flags for go first, before the ID3v2.3 step.
-	want := []odid3.Dropped_Frame{{"TPE1", .Encrypted}, {"PRIV", .No_Equivalent}}
+	// What ID3v2.2 cannot hold goes first, before the ID3v2.3 step, in the order of the frames.
+	want := []odid3.Dropped_Frame{{"PRIV", .No_Equivalent}, {"TPE1", .Encrypted}}
 	testing.expect_value(t, len(dropped), len(want))
 	for d, i in dropped {
 		testing.expectf(
@@ -1019,6 +1019,91 @@ flagged_frames_go_alone_to_v22 :: proc(t: ^testing.T) {
 		expect_frames(t, &tags.v2, c.want)
 		for f in tags.v2.frames {
 			testing.expect_value(t, f.id, "IPL")
+		}
+	}
+}
+
+@(test)
+frames_the_target_has_no_place_for :: proc(t: ^testing.T) {
+	// A frame odid3 knows that the target does not have and that no step converts is dropped:
+	// those ID3v2.4 removed, those it added (but iTunes' sort frames, which iTunes writes in
+	// ID3v2.3), and in ID3v2.2 whatever has no ID there, chapters before the frames inside them
+	// are converted. Unknown frames stay between ID3v2.3 and 2.4.
+	lone := frame(4, "TIT2", {0x02, 0xD8, 0x00})
+	cases := []struct {
+		major:   u8,
+		frames:  []u8,
+		to:      odid3.V2_Version,
+		dropped: []odid3.Dropped_Frame,
+		ids:     []string,
+	} {
+		{
+			3,
+			concat(
+				frame(3, "TRDA", text("\x00June")),
+				frame(3, "TSIZ", text("\x001000")),
+				frame(3, "TIT2", text("\x00T")),
+			),
+			.V2_4,
+			{{"TRDA", .No_Equivalent}, {"TSIZ", .No_Equivalent}},
+			{"TIT2"},
+		},
+		{
+			4,
+			concat(
+				frame(4, "TDEN", text("\x032019")),
+				frame(4, "TDRL", text("\x032019")),
+				frame(4, "TDTG", text("\x032019")),
+				frame(4, "TMOO", text("\x03Calm")),
+				frame(4, "TPRO", text("\x03(P)")),
+				frame(4, "TSST", text("\x03One")),
+				frame(4, "TSOP", text("\x03Ada")),
+			),
+			.V2_3,
+			{
+				{"TDEN", .No_Equivalent},
+				{"TDRL", .No_Equivalent},
+				{"TDTG", .No_Equivalent},
+				{"TMOO", .No_Equivalent},
+				{"TPRO", .No_Equivalent},
+				{"TSST", .No_Equivalent},
+			},
+			{"TSOP"},
+		},
+		{
+			4,
+			concat(
+				chapter_frame(4, "ch0", 0, 10, lone),
+				frame(4, "CTOC", concat(text("toc\x00\x03\x01ch0\x00"), lone)),
+			),
+			.V2_2,
+			{{"CHAP", .No_Equivalent}, {"CTOC", .No_Equivalent}},
+			{},
+		},
+		{4, frame(4, "XYZW", text("data")), .V2_3, {}, {"XYZW"}},
+		{4, frame(4, "XYZW", text("data")), .V2_2, {{"XYZW", .No_Equivalent}}, {}},
+		{
+			2,
+			concat(frame22("TRD", text("\x00June")), frame22("TT2", text("\x00T"))),
+			.V2_4,
+			{{"TRD", .No_Equivalent}},
+			{"TIT2"},
+		},
+		{
+			3,
+			chapter_frame(3, "ch0", 0, 10, frame(3, "TRDA", text("\x00June"))),
+			.V2_4,
+			{{"TRDA", .No_Equivalent}},
+			{"CHAP"},
+		},
+	}
+	for c in cases {
+		tags := read(t, tag_file(c.major, 0, c.frames))
+		defer odid3.destroy(&tags)
+		expect_dropped(t, convert(t, &tags.v2, c.to), c.dropped)
+		testing.expect_value(t, len(tags.v2.frames), len(c.ids))
+		for f, i in tags.v2.frames[:min(len(tags.v2.frames), len(c.ids))] {
+			testing.expect_value(t, f.id, c.ids[i])
 		}
 	}
 }
