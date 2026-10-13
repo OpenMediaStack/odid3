@@ -365,6 +365,9 @@ utf16_order_of :: proc(f: ^Frame) -> (order: Byte_Order, mixed, known: bool) {
 // odid3 does not decode.
 @(private)
 text_of :: proc(f: ^Frame) -> (text: []u8, only_first, known: bool) {
+	if len(f.data) == 0 {
+		return nil, false, false
+	}
 	switch f.id {
 	case "COMM", "COM", "USLT", "ULT":
 		return f.data[min(4, len(f.data)):], false, true

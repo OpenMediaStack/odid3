@@ -265,9 +265,7 @@ a_real_replacement_character_survives :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, nil)
 	again := read(t, concat(written, fixture(t, "no_tag.mp3")))
 	defer odid3.destroy(&again)
-	for f, i in again.v2.frames {
-		testing.expectf(t, string(f.data) == in_utf8[i], "render %s: %x", f.id, f.data)
-	}
+	expect_utf8(t, &again.v2, in_utf8[:])
 	expect_utf8(t, &tags.v2, in_utf8[:])
 
 	for order in odid3.Byte_Order {
@@ -290,12 +288,18 @@ a_real_replacement_character_survives :: proc(t: ^testing.T) {
 	}
 
 	// D8 00 after a big endian first string is a surrogate without its pair, though it would be
-	// "Ø" in little endian; a real U+FFFD does not make one survive.
+	// "Ø" in little endian; a real U+FFFD does not make one survive. Descriptions are checked too.
 	bad := odid3.Error(odid3.Format_Error.Bad_Content)
+	unpaired := []u8{0xFE, 0xFF, 0xD8, 0x00}
+	png := []u8{0, 0, 0x89, 'P', 'N', 'G'}
 	lone_surrogates := [?][]u8 {
 		frame(4, "TPE1", concat({1}, utf16("B", .Big_Endian), {0, 0, 0xD8, 0x00})),
 		frame(4, "COMM", concat({1}, text("eng"), utf16("d", .Big_Endian), {0, 0, 0xD8, 0x00})),
 		frame(4, "TIT2", concat({1}, utf16("\uFFFD", .Big_Endian), {0xD8, 0x00})),
+		frame(4, "TXXX", concat({1}, unpaired, {0, 0}, utf16("v", .Big_Endian))),
+		frame(4, "WXXX", concat({1}, unpaired, {0, 0}, text("http://x"))),
+		frame(4, "COMM", concat({1}, text("eng"), unpaired, {0, 0}, utf16("c", .Big_Endian))),
+		frame(4, "APIC", concat({1}, text("image/png\x00\x03"), unpaired, png)),
 	}
 	for lone in lone_surrogates {
 		refused := read(t, tag_file(4, 0, lone))
@@ -310,6 +314,13 @@ a_real_replacement_character_survives :: proc(t: ^testing.T) {
 		)
 		testing.expect_value(t, err, bad)
 	}
+	// Little endian, so that reading one byte off would find no surrogate.
+	unpaired_le := []u8{0xFF, 0xFE, 0x00, 0xD8}
+	v22 := read(t, tag_file(2, 0, frame22("PIC", concat({1}, text("PNG\x03"), unpaired_le, png))))
+	defer odid3.destroy(&v22)
+	testing.expect_value(t, odid3.set_encoding(&v22.v2, odid3.Encoding.Latin1), bad)
+	_, err = odid3.render(&v22.v2, {encoding = .Latin1}, context.temp_allocator)
+	testing.expect_value(t, err, bad)
 }
 
 @(test)
