@@ -469,6 +469,14 @@ rebuilt_frames_carry_text_in_part :: proc(t: ^testing.T) {
 			"",
 			"\x01image/jpeg\x00\x03\xFF\xFE\xFD\xFF\x00\x00\xFF\xD8",
 		},
+		// An image format holding a NUL, which ends the APIC's MIME type there.
+		{
+			2,
+			frame22("PIC", text("\x01J\x00G\x03\xFF\xFEd\x00\x00\x00\xFF\xD8")),
+			.V2_3,
+			"PIC",
+			"\x01J\x00\x03\xFF\xFEd\x00\x00\x00\xFF\xD8",
+		},
 	}
 	for c in cases {
 		tags := read(t, tag_file(c.major, 0, c.frame))
@@ -1337,6 +1345,36 @@ converted_pictures_keep_their_image_format :: proc(t: ^testing.T) {
 	short := read(t, tag_file(3, 0, frame(3, "APIC", concat({1}, format[1:], {0}, rest))))
 	defer odid3.destroy(&short)
 	expect_dropped(t, convert(t, &short.v2, .V2_2), {{"APIC", .No_Equivalent}})
+}
+
+@(test)
+image_formats_holding_a_nul :: proc(t: ^testing.T) {
+	// A NUL ends an APIC's MIME type: a PIC's image format holding one goes to ID3v2.3 or 2.4 cut
+	// there, and listed, rather than written whole, which would read back with the rest of the
+	// format as the picture type. Back in ID3v2.2, a MIME type shorter than 3 characters has no
+	// place in a PIC.
+	rest := concat({3}, utf16("d", .Big_Endian), {0, 0, 0xFF, 0xD8})
+	Case :: struct {
+		format: []u8,
+		mime:   string,
+	}
+	for c in ([]Case{{{'J', 0, 'G'}, "J"}, {{'J', 'P', 0}, "JP"}, {{0, 'P', 'G'}, ""}}) {
+		for to in ([]odid3.V2_Version{.V2_3, .V2_4}) {
+			tags := read(t, tag_file(2, 0, frame22("PIC", concat({1}, c.format, rest))))
+			defer odid3.destroy(&tags)
+			expect_dropped(t, convert(t, &tags.v2, to), {{"PIC", .Partly_Converted}})
+			expect_frames(t, &tags.v2, {string(concat({1}, text(c.mime), {0}, rest))})
+			expect_dropped(t, convert(t, &tags.v2, .V2_2), {{"APIC", .No_Equivalent}})
+			expect_frames(t, &tags.v2, {})
+		}
+	}
+	// Listed once when its description, a surrogate without its pair, does not decode whole either.
+	lone := []u8{0xFE, 0xFF, 0xD8, 0x00}
+	picture := concat(text("\x01J\x00G\x03"), lone, {0, 0, 0xFF, 0xD8})
+	both := read(t, tag_file(2, 0, frame22("PIC", picture)))
+	defer odid3.destroy(&both)
+	expect_dropped(t, convert(t, &both.v2, .V2_3), {{"PIC", .Partly_Converted}})
+	expect_frames(t, &both.v2, {"\x01J\x00\x03\xFE\xFF\xFF\xFD\x00\x00\xFF\xD8"})
 }
 
 @(test)
