@@ -943,9 +943,10 @@ v22_image_format :: proc(mime: string) -> string {
 // lacks .Encoding_Not_In_Version. A frame already in the encoding is left as it is. Text that would
 // not survive (bytes other than NULs after the text of a comment or the URL of a WXXX, a UTF-16
 // surrogate without its pair, an odd last byte of UTF-16 text other than a NUL) gives .Bad_Content
-// rather than being changed; before ID3v2.4, several values are joined with "/". UTF-16 with a byte order mark is written in byte_order, and a frame already in
-// the encoding but in the other order is re-encoded; nil keeps the order of a frame already in
-// UTF-16 and writes the others little endian.
+// rather than being changed; before ID3v2.4, several values are joined with "/". UTF-16 with a
+// byte order mark is written in byte_order, and a frame already in the encoding but in the other
+// order is re-encoded; nil keeps the order of a frame already in UTF-16 and writes the others
+// little endian.
 set_encoding :: proc {
 	set_frame_encoding,
 	set_tag_encoding,

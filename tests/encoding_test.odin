@@ -532,86 +532,124 @@ undecodable_layouts_keep_their_bytes :: proc(t: ^testing.T) {
 	// A COMM, USLT or APIC whose data does not follow its layout holds no text odid3 can find:
 	// set_encoding on the tag and the write options leave it as it is, and change the frames beside
 	// it, while set_encoding on that frame alone refuses it.
-	for major in ([]u8{3, 4}) {
-		version := odid3.V2_Version.V2_3 if major == 3 else .V2_4
-		damaged := [?][]u8 {
-			frame(major, "COMM", text("\x00en")),
-			frame(major, "COMM", text("\x01")),
-			frame(major, "USLT", text("\x01en")),
-			frame(major, "APIC", text("\x00image/png")),
-			frame(major, "APIC", text("\x01image/png\x00")),
-			frame(major, "APIC", text("\x00image/png\x00\x03cover")),
+	Damaged :: struct {
+		major:    u8,
+		id, data: string,
+	}
+	Expected :: struct {
+		tag:   ^odid3.Tag,
+		title: string,
+	}
+	damaged := []Damaged {
+		{2, "COM", "\x00en"},
+		{2, "ULT", "\x01en"},
+		{2, "PIC", "\x00PN"},
+		{2, "PIC", "\x01PNG"},
+		{2, "PIC", "\x00PNG\x03cover"},
+		{3, "COMM", "\x00en"},
+		{3, "COMM", "\x01"},
+		{3, "USLT", "\x01en"},
+		{3, "APIC", "\x00image/png"},
+		{3, "APIC", "\x01image/png\x00"},
+		{3, "APIC", "\x00image/png\x00\x03cover"},
+		{4, "COMM", "\x00en"},
+		{4, "USLT", "\x01en"},
+		{4, "APIC", "\x00image/png"},
+		{4, "APIC", "\x01image/png\x00"},
+	}
+	for d in damaged {
+		title := concat({1}, utf16("T", .Little_Endian))
+		body: []u8
+		if d.major == 2 {
+			body = concat(frame22(d.id, text(d.data)), frame22("TT2", title))
+		} else {
+			body = concat(frame(d.major, d.id, text(d.data)), frame(d.major, "TIT2", title))
 		}
-		for bad in damaged {
-			title := frame(major, "TIT2", concat({1}, utf16("T", .Little_Endian)))
-			tags := read(t, tag_file(major, 0, bad, title))
-			defer odid3.destroy(&tags)
-			encoded, encoding_err := odid3.render(
-				&tags.v2,
-				{encoding = .Latin1},
-				context.temp_allocator,
-			)
-			testing.expect_value(t, encoding_err, nil)
-			ordered, order_err := odid3.render(
-				&tags.v2,
-				{utf16_byte_order = .Big_Endian},
-				context.temp_allocator,
-			)
-			testing.expect_value(t, order_err, nil)
-			other := odid3.Encoding.UTF16 if bad[10] == 0 else .Latin1
-			testing.expect_value(
+		tags := read(t, tag_file(d.major, 0, body))
+		defer odid3.destroy(&tags)
+		// Every call reaches the damaged frame: the encoding asked is not its own, or its UTF-16 is
+		// in the other byte order.
+		other := odid3.Encoding.UTF16 if d.data[0] == 0 else .Latin1
+		encoded, encoding_err := odid3.render(&tags.v2, {encoding = other}, context.temp_allocator)
+		testing.expect_value(t, encoding_err, nil)
+		ordered, order_err := odid3.render(
+			&tags.v2,
+			{utf16_byte_order = .Big_Endian},
+			context.temp_allocator,
+		)
+		testing.expect_value(t, order_err, nil)
+		testing.expect_value(
+			t,
+			odid3.set_encoding(&tags.v2.frames[0], tags.v2.version, other),
+			odid3.Error(odid3.Format_Error.Bad_Content),
+		)
+		testing.expect_value(t, odid3.set_encoding(&tags.v2, other), nil)
+		reencoded := read(t, encoded)
+		defer odid3.destroy(&reencoded)
+		big := read(t, ordered)
+		defer odid3.destroy(&big)
+		in_other := "\x00T" if other == .Latin1 else string(title)
+		results := []Expected {
+			{&tags.v2, in_other},
+			{&reencoded.v2, in_other},
+			{&big.v2, "\x01\xFE\xFF\x00T"},
+		}
+		for r in results {
+			frames := r.tag.frames[:]
+			testing.expectf(
 				t,
-				odid3.set_encoding(&tags.v2.frames[0], version, other),
-				odid3.Error(odid3.Format_Error.Bad_Content),
+				len(frames) == 2 &&
+				frames[0].id == d.id &&
+				string(frames[0].data) == d.data &&
+				string(frames[1].data) == r.title,
+				"%s %q in ID3v2.%d: %d frames",
+				d.id,
+				d.data,
+				d.major,
+				len(frames),
 			)
-			testing.expect_value(
-				t,
-				odid3.set_encoding(&tags.v2, .UTF16, odid3.Byte_Order.Big_Endian),
-				nil,
-			)
-			latin1 := read(t, encoded)
-			defer odid3.destroy(&latin1)
-			big := read(t, ordered)
-			defer odid3.destroy(&big)
-			results := []struct {
-				tag:   ^odid3.Tag,
-				title: string,
-			} {
-				{&tags.v2, "\x01\xFE\xFF\x00T"},
-				{&latin1.v2, "\x00T"},
-				{&big.v2, "\x01\xFE\xFF\x00T"},
-			}
-			for r in results {
-				frames := r.tag.frames[:]
-				testing.expectf(
-					t,
-					len(frames) == 2 &&
-					frames[0].id == string(bad[:4]) &&
-					bytes.equal(frames[0].data, bad[10:]) &&
-					string(frames[1].data) == r.title,
-					"%q in ID3v2.%d: %d frames",
-					string(bad),
-					major,
-					len(frames),
-				)
-			}
 		}
 	}
 
-	picture := frame22("PIC", text("\x00PN"))
-	v22 := read(
-		t,
-		tag_file(2, 0, picture, frame22("TT2", concat({1}, utf16("T", .Little_Endian)))),
+	// Inside a chapter too; the damaged APIC is in UTF-16, so that Latin-1 reaches it.
+	picture := frame(4, "APIC", text("\x01image/png\x00"))
+	inside := frame(4, "TIT2", concat({1}, utf16("T", .Little_Endian)))
+	chapters := read(t, tag_file(4, 0, chapter_frame(4, "ch0", 0, 10, picture, inside)))
+	defer odid3.destroy(&chapters)
+	encoded, encoding_err := odid3.render(
+		&chapters.v2,
+		{encoding = .Latin1},
+		context.temp_allocator,
 	)
-	defer odid3.destroy(&v22)
-	testing.expect_value(t, odid3.set_encoding(&v22.v2, odid3.Encoding.Latin1), nil)
-	frames := v22.v2.frames[:]
-	testing.expect(
-		t,
-		len(frames) == 2 &&
-		bytes.equal(frames[0].data, picture[6:]) &&
-		string(frames[1].data) == "\x00T",
+	testing.expect_value(t, encoding_err, nil)
+	ordered, order_err := odid3.render(
+		&chapters.v2,
+		{utf16_byte_order = .Big_Endian},
+		context.temp_allocator,
 	)
+	testing.expect_value(t, order_err, nil)
+	testing.expect_value(t, odid3.set_encoding(&chapters.v2, odid3.Encoding.Latin1), nil)
+	latin1 := read(t, encoded)
+	defer odid3.destroy(&latin1)
+	big := read(t, ordered)
+	defer odid3.destroy(&big)
+	results := []Expected {
+		{&chapters.v2, "\x00T"},
+		{&latin1.v2, "\x00T"},
+		{&big.v2, "\x01\xFE\xFF\x00T"},
+	}
+	for r in results {
+		if !testing.expect_value(t, len(r.tag.frames), 1) {
+			continue
+		}
+		chapter := expect_content(t, decode(t, &r.tag.frames[0], .V2_4), odid3.Chapter)
+		testing.expect(
+			t,
+			len(chapter.frames) == 2 &&
+			string(chapter.frames[0].data) == "\x01image/png\x00" &&
+			string(chapter.frames[1].data) == r.title,
+		)
+	}
 }
 
 @(test)
