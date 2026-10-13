@@ -695,7 +695,9 @@ big_endian_counter :: proc(b: []u8) -> (n: u64) {
 // that its encoding cannot hold gives .Not_Encodable, an encoding the version does not have
 // .Encoding_Not_In_Version, an ID of the wrong length .Bad_Frame_Id. Before ID3v2.4, several values
 // are joined with "/", as mutagen does. UTF-16 is written little endian after its byte order mark;
-// set_encoding gives a frame the other order.
+// set_encoding gives a frame the other order. The frames inside a Chapter or Table_Of_Contents are
+// checked as new ones, even those decoded from a file: an ID other than capital letters and digits
+// gives .Bad_Frame_Id, an encoding byte the version lacks .Encoding_Not_In_Version.
 encode_frame :: proc(
 	content: Frame_Content,
 	id: string,
@@ -715,6 +717,7 @@ encode_frame_in :: proc(
 	version: V2_Version,
 	order: Byte_Order,
 	allocator: runtime.Allocator,
+	frames_read := false,
 ) -> (
 	frame: Frame,
 	err: Error,
@@ -785,7 +788,7 @@ encode_frame_in :: proc(
 		put_be32(times[8:12], c.start_offset)
 		put_be32(times[12:16], c.end_offset)
 		append(&data, ..times[:]) or_return
-		render_embedded_frames(&data, c.frames[:], version) or_return
+		render_embedded_frames(&data, c.frames[:], version, frames_read) or_return
 	case Table_Of_Contents:
 		encode_string(&data, .Latin1, c.element_id, true) or_return
 		flags: u8 = (0x02 if c.top_level else 0) | (0x01 if c.ordered else 0)
@@ -796,7 +799,7 @@ encode_frame_in :: proc(
 		for child in c.children {
 			encode_string(&data, .Latin1, child, true) or_return
 		}
-		render_embedded_frames(&data, c.frames[:], version) or_return
+		render_embedded_frames(&data, c.frames[:], version, frames_read) or_return
 	case Binary:
 		append(&data, ..c.data) or_return
 	case:
@@ -819,15 +822,36 @@ encode_frame_in :: proc(
 // The frames inside a chapter are written uncompressed: odid3 only inflates them when the chapter
 // comes straight from a file, which a new one does not.
 @(private)
-render_embedded_frames :: proc(data: ^[dynamic]u8, frames: []Frame, version: V2_Version) -> Error {
+render_embedded_frames :: proc(
+	data: ^[dynamic]u8,
+	frames: []Frame,
+	version: V2_Version,
+	frames_read: bool,
+) -> Error {
 	for f in frames {
 		plain := f
 		if !is_stored(&plain) {
 			plain.format -= {.Compression}
 		}
-		render_frame(data, &plain, version) or_return
+		render_frame(data, &plain, version, read = frames_read) or_return
 	}
 	return nil
+}
+
+// encode_frame for a CHAP or CTOC that odid3 decoded: the frames inside were read from its bytes
+// (or rebuilt by odid3, valid anyway), so they keep what render keeps in a frame read from a tag,
+// an odd ID or an encoding byte the version lacks, rather than being refused as new frames are.
+@(private)
+encode_decoded_chapter :: proc(
+	content: Frame_Content,
+	id: string,
+	version: V2_Version,
+	allocator: runtime.Allocator,
+) -> (
+	Frame,
+	Error,
+) {
+	return encode_frame_in(content, id, version, .Little_Endian, allocator, frames_read = true)
 }
 
 @(private)
@@ -1069,7 +1093,7 @@ reencoded_chapter :: proc(
 			r = {}
 		}
 	}
-	replacement = encode_frame(content, f.id, version, f.allocator) or_return
+	replacement = encode_decoded_chapter(content, f.id, version, f.allocator) or_return
 	keep_identity(&replacement, f)
 	return replacement, true, nil
 }

@@ -260,7 +260,7 @@ convert_chapter :: proc(
 	case Play_Counter, Private, Binary:
 		return nil
 	}
-	replacement := encode_frame(content, f.id, to, tag.allocator) or_return
+	replacement := encode_decoded_chapter(content, f.id, to, tag.allocator) or_return
 	replacement.status = f.status
 	carry_format(&replacement, f)
 	destroy_frame(f)

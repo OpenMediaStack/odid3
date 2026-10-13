@@ -200,14 +200,15 @@ put_be32 :: proc(b: []u8, n: u32) {
 // A frame whose data is its content is written with the bytes its flags need before the content,
 // compressed and unsynchronised when its format or forced asks for it; one whose data is not
 // (encrypted, badly compressed, too short) is written back as it was stored. A frame read from a
-// file only needs an ID that a reader finds again; a new one, a valid ID and a text encoding its
-// version has.
+// file (or from a chapter's bytes, which read says, as its offset is -1) only needs an ID that a
+// reader finds again; a new one, a valid ID and a text encoding its version has.
 @(private)
 render_frame :: proc(
 	out: ^[dynamic]u8,
 	f: ^Frame,
 	version: V2_Version,
 	forced: Frame_Format = {},
+	read := false,
 ) -> Error {
 	if f.problem == .Skipped_Picture {
 		return .Incomplete_Tag
@@ -216,7 +217,7 @@ render_frame :: proc(
 	if len(f.id) != id_len || f.id[0] < 'A' || f.id[0] > 'Z' {
 		return .Bad_Frame_Id
 	}
-	is_new := f.offset < 0
+	is_new := f.offset < 0 && !read
 	if is_new && !is_frame_id(transmute([]u8)f.id) {
 		return .Bad_Frame_Id
 	}
