@@ -445,7 +445,10 @@ be24 :: proc(b: []u8) -> u32 {
 // iTunes wrote ID3v2.2's PIC, with a NUL, in some ID3v2.3 tags.
 @(private)
 is_picture_id :: proc(id: string, version: V2_Version) -> bool {
-	return id == id_in_tag(.APIC, version) || version != .V2_2 && id == "PIC\x00"
+	if version == .V2_2 {
+		return id == id_in_tag(.APIC, .V2_2)
+	}
+	return id == id_in_tag(.APIC, .V2_3) || id == "PIC\x00"
 }
 
 // ID3v2.4 frame sizes are syncsafe, but iTunes wrote plain integers for years (mutagen's

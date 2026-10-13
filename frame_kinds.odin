@@ -199,7 +199,7 @@ kinds_of :: proc(id: string) -> Frame_Kinds {
 	return {kind} if ok else {}
 }
 
-// Whether an ID is that of one of these kinds in some version, as kinds_of would find it.
+// Whether an ID is that of one of these kinds in either form, as kinds_of would find it.
 @(private)
 is_kind :: proc(id: string, kinds: Frame_Kinds) -> bool {
 	if id == "" {
@@ -208,6 +208,17 @@ is_kind :: proc(id: string, kinds: Frame_Kinds) -> bool {
 	for kind in kinds {
 		ids := FRAME_IDS[kind]
 		if id == ids.v22 || id == ids.v23 || id == ids.v24 {
+			return true
+		}
+	}
+	return false
+}
+
+// Whether an ID is that of one of these kinds in the form of a version, as frame_kind reads it.
+@(private)
+is_kind_in :: proc(id: string, kinds: Frame_Kinds, version: V2_Version) -> bool {
+	for kind in kinds {
+		if form := id_in_tag(kind, version); form != "" && id == form {
 			return true
 		}
 	}

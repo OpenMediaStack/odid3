@@ -309,7 +309,12 @@ convert_date :: proc(
 ) -> Error {
 	first := [len(DATE_KINDS)]int{-1, -1, -1, -1}
 	for i := 0; i < len(tag.frames); {
-		k := date_part(tag.frames[i].id)
+		k := -1
+		for date, j in DATE_KINDS {
+			if is_kind_in(tag.frames[i].id, {date}, from) {
+				k = j
+			}
+		}
 		switch {
 		case k < 0:
 			i += 1
@@ -367,7 +372,7 @@ convert_original_year :: proc(
 	for i := 0; i < len(tag.frames); {
 		f := &tag.frames[i]
 		switch {
-		case !is_kind(f.id, {source}):
+		case !is_kind_in(f.id, {source}, tag.version):
 			i += 1
 		case f.problem != .None && f.problem != .Bad_Data_Length:
 			drop(tag, i, drop_reason_of(f), dropped, allocator) or_return
@@ -422,7 +427,7 @@ convert_people :: proc(
 	previous: Maybe(Text_Format)
 	for i := 0; i < len(tag.frames); {
 		f := &tag.frames[i]
-		if !is_kind(f.id, sources) {
+		if !is_kind_in(f.id, sources, tag.version) {
 			i += 1
 			continue
 		}
@@ -979,7 +984,7 @@ convert_text :: proc(
 	switch &c in content {
 	case Text:
 		if len(c.values) > 1 {
-			join_values(&c.values, is_kind(f.id, {.TCON}), tag.allocator) or_return
+			join_values(&c.values, is_kind_in(f.id, {.TCON}, tag.version), tag.allocator) or_return
 			changed = true
 		}
 		format = keep_format(previous, tag.version, ..c.values)
