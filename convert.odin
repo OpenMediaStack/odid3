@@ -618,8 +618,9 @@ rename_frame :: proc(f: ^Frame, id: string) -> runtime.Allocator_Error {
 }
 
 // APIC holds a MIME type where PIC holds a 3 character image format: the picture is decoded and
-// encoded again, and listed when its description does not decode whole. ok is false when it cannot
-// be decoded, or when ID3v2.2 has no image format for its MIME type.
+// encoded again, in its encoding and byte order when the target version has that encoding, and
+// listed when its description does not decode whole. ok is false when it cannot be decoded, or
+// when ID3v2.2 has no image format for its MIME type.
 @(private)
 change_picture_layout :: proc(
 	tag: ^Tag,
@@ -644,13 +645,13 @@ change_picture_layout :: proc(
 	if decode_err != nil || !is_picture {
 		return false, nil
 	}
-	if !encoding_holds(picture.encoding, to) {
-		picture.encoding = .Latin1 if fits_all_latin1(picture.description) else .UTF16
-	}
-	replacement, encode_err := encode_frame(
+	format := keep_format(text_format(picture.encoding, f), to, picture.description)
+	picture.encoding = format.encoding
+	replacement, encode_err := encode_frame_in(
 		picture,
 		"PIC" if to == .V2_2 else "APIC",
 		to,
+		format.order,
 		tag.allocator,
 	)
 	if encode_err == Error(Format_Error.Not_In_Version) {
@@ -954,17 +955,6 @@ drop :: proc(
 }
 
 
-@(private)
-fits_all_latin1 :: proc(values: ..string) -> bool {
-	for value in values {
-		if !fits_latin1(value, max(int)) {
-			return false
-		}
-	}
-	return true
-}
-
-
 // ID3v2.3 parts of a date that go nowhere, listed and removed, with the frame that replaces them
 // put in the place of the first.
 @(private)
@@ -1123,8 +1113,9 @@ date_to_v23 :: proc(
 
 // Re-encodes a text frame its new version cannot hold as it is: an encoding the version lacks,
 // or, before ID3v2.4, several values, which ID3v2.3 joins with "/" (genre references go in
-// parentheses before the rest). ok is false when such a frame cannot be decoded and encoded again;
-// one whose text does not decode whole is re-encoded without what is lost, and listed.
+// parentheses before the rest); a frame whose encoding the version has keeps it, with its byte
+// order. ok is false when such a frame cannot be decoded and encoded again; one whose text does
+// not decode whole is re-encoded without what is lost, and listed.
 @(private)
 convert_text :: proc(
 	tag: ^Tag,
@@ -1156,27 +1147,36 @@ convert_text :: proc(
 		return holds, nil
 	}
 	changed := !holds
-	// Only versions before ID3v2.4 lack encodings, and they hold Latin-1 or UTF-16.
+	previous := text_format(encoding, f)
+	format: Text_Format
 	switch &c in content {
 	case Text:
 		if len(c.values) > 1 {
 			join_values(&c.values, f.id == "TCON", tag.allocator) or_return
 			changed = true
 		}
-		c.encoding = .Latin1 if fits_all_latin1(..c.values) else .UTF16
+		format = keep_format(previous, tag.version, ..c.values)
+		c.encoding = format.encoding
 	case User_Text:
 		if len(c.values) > 1 {
 			join_values(&c.values, false, tag.allocator) or_return
 			changed = true
 		}
-		c.encoding =
-			.Latin1 if fits_all_latin1(..c.values) && fits_all_latin1(c.description) else .UTF16
+		format = keep_format(
+			keep_format(previous, tag.version, ..c.values),
+			tag.version,
+			c.description,
+		)
+		c.encoding = format.encoding
 	case User_Url:
-		c.encoding = .Latin1 if fits_all_latin1(c.description) else .UTF16
+		format = keep_format(previous, tag.version, c.description)
+		c.encoding = format.encoding
 	case Comment:
-		c.encoding = .Latin1 if fits_all_latin1(c.description, c.text) else .UTF16
+		format = keep_format(previous, tag.version, c.description, c.text)
+		c.encoding = format.encoding
 	case Picture:
-		c.encoding = .Latin1 if fits_all_latin1(c.description) else .UTF16
+		format = keep_format(previous, tag.version, c.description)
+		c.encoding = format.encoding
 	case Url,
 	     Unique_File_Id,
 	     Popularimeter,
@@ -1193,7 +1193,13 @@ convert_text :: proc(
 	if !text_survives(f, &content) {
 		note(dropped, f.id, .Partly_Converted, allocator) or_return
 	}
-	replacement := encode_frame(content, f.id, tag.version, tag.allocator) or_return
+	replacement := encode_frame_in(
+		content,
+		f.id,
+		tag.version,
+		format.order,
+		tag.allocator,
+	) or_return
 	replacement.status = f.status
 	carry_format(&replacement, f)
 	destroy_frame(f)

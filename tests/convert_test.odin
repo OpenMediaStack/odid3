@@ -96,6 +96,119 @@ text_is_reencoded_for_v23 :: proc(t: ^testing.T) {
 	testing.expect_value(t, tag_field(&several.v2, .Artist), "Ada/Bea")
 }
 
+@(test)
+a_conversion_keeps_the_encodings_the_target_has :: proc(t: ^testing.T) {
+	// Joined values and pictures between APIC and PIC are rebuilt in their encoding and byte
+	// order when the target has it; UTF-16BE and UTF-8, which ID3v2.3 lacks, are re-encoded in
+	// UTF-16 little endian when Latin-1 cannot hold the text.
+	cases := []struct {
+		major: u8,
+		frame: []u8,
+		to:    odid3.V2_Version,
+		want:  []u8,
+	} {
+		{
+			4,
+			frame(
+				4,
+				"TPE1",
+				concat({1}, utf16("Ada", .Big_Endian), {0, 0, 0, 'B', 0, 'e', 0, 'a'}),
+			),
+			.V2_3,
+			concat({1}, utf16("Ada/Bea", .Big_Endian)),
+		},
+		{
+			4,
+			frame(
+				4,
+				"TPE1",
+				concat({1}, utf16("Ada", .Little_Endian), {0, 0, 'B', 0, 'e', 0, 'a', 0}),
+			),
+			.V2_3,
+			concat({1}, utf16("Ada/Bea", .Little_Endian)),
+		},
+		{
+			4,
+			frame(
+				4,
+				"TXXX",
+				concat(
+					{1},
+					utf16("d", .Big_Endian),
+					{0, 0},
+					utf16("A", .Big_Endian),
+					{0, 0},
+					utf16("B", .Big_Endian),
+				),
+			),
+			.V2_3,
+			concat({1}, utf16("d", .Big_Endian), {0, 0}, utf16("A/B", .Big_Endian)),
+		},
+		{
+			3,
+			frame(
+				3,
+				"APIC",
+				concat(text("\x01image/jpeg\x00\x03"), utf16("d", .Big_Endian), {0, 0, 0xFF}),
+			),
+			.V2_2,
+			concat(text("\x01JPG\x03"), utf16("d", .Big_Endian), {0, 0, 0xFF}),
+		},
+		{
+			2,
+			frame22("PIC", concat(text("\x01JPG\x03"), utf16("d", .Big_Endian), {0, 0, 0xFF})),
+			.V2_3,
+			concat(text("\x01image/jpeg\x00\x03"), utf16("d", .Big_Endian), {0, 0, 0xFF}),
+		},
+		{
+			4,
+			frame(4, "TPE1", concat({2}, utf16("坂本", .Big_Endian)[2:])),
+			.V2_3,
+			concat({1}, utf16("坂本", .Little_Endian)),
+		},
+		{
+			4,
+			frame(4, "TPE1", text("\x03坂\x00本")),
+			.V2_3,
+			concat({1}, utf16("坂/本", .Little_Endian)),
+		},
+		{
+			4,
+			frame(
+				4,
+				"TPE1",
+				concat({1}, utf16("Ada", .Little_Endian), {0, 0, 'B', 0, 'e', 0, 'a', 0}),
+				0,
+				0x02,
+			),
+			.V2_3,
+			concat({1}, utf16("Ada/Bea", .Little_Endian)),
+		},
+		{
+			4,
+			frame(
+				4,
+				"APIC",
+				concat(
+					text("\x01image/jpeg\x00\x03"),
+					utf16("d", .Big_Endian),
+					{0, 0, 0xFF, 0xE0},
+				),
+				0,
+				0x02,
+			),
+			.V2_2,
+			concat(text("\x01JPG\x03"), utf16("d", .Big_Endian), {0, 0, 0xFF, 0xE0}),
+		},
+	}
+	for c in cases {
+		tags := read(t, tag_file(c.major, 0, c.frame))
+		defer odid3.destroy(&tags)
+		expect_dropped(t, convert(t, &tags.v2, c.to), {})
+		expect_frames(t, &tags.v2, {string(c.want)})
+	}
+}
+
 expect_frames :: proc(t: ^testing.T, tag: ^odid3.Tag, want: []string, loc := #caller_location) {
 	testing.expect_value(t, len(tag.frames), len(want), loc = loc)
 	for f, i in tag.frames[:min(len(tag.frames), len(want))] {
