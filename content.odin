@@ -60,7 +60,9 @@ Comment :: struct {
 // its own cannot hold the description.
 Picture :: struct {
 	encoding:    Encoding,
-	mime:        string, // as stored; ID3v2.2's "JPG" and "PNG" read as "image/jpeg" and "image/png"
+	// As stored; ID3v2.2's "JPG", "PNG", "GIF" and "BMP" read as their MIME types
+	// ("image/jpeg"...), any other image format as its 3 Latin-1 characters.
+	mime:        string,
 	type:        Picture_Type,
 	description: string,
 	data:        []u8, // the image, or its URL when mime is "-->"
@@ -693,11 +695,12 @@ big_endian_counter :: proc(b: []u8) -> (n: u64) {
 
 // A new frame holding content in the layout of a tag of the given version, owned by allocator. Text
 // that its encoding cannot hold gives .Not_Encodable, an encoding the version does not have
-// .Encoding_Not_In_Version, an ID of the wrong length .Bad_Frame_Id. Before ID3v2.4, several values
-// are joined with "/", as mutagen does. UTF-16 is written little endian after its byte order mark;
-// set_encoding gives a frame the other order. The frames inside a Chapter or Table_Of_Contents are
-// checked as new ones, even those decoded from a file: an ID other than capital letters and digits
-// gives .Bad_Frame_Id, an encoding byte the version lacks .Encoding_Not_In_Version.
+// .Encoding_Not_In_Version, an ID of the wrong length .Bad_Frame_Id, a MIME type ID3v2.2 has no
+// image format for .Not_In_Version. Before ID3v2.4, several values are joined with "/", as mutagen
+// does. UTF-16 is written little endian after its byte order mark; set_encoding gives a frame the
+// other order. The frames inside a Chapter or Table_Of_Contents are checked as new ones, even those
+// decoded from a file: an ID other than capital letters and digits gives .Bad_Frame_Id, an encoding
+// byte the version lacks .Encoding_Not_In_Version.
 encode_frame :: proc(
 	content: Frame_Content,
 	id: string,
@@ -755,11 +758,11 @@ encode_frame_in :: proc(
 	case Picture:
 		start_text(&data, c.encoding, version) or_return
 		if version == .V2_2 {
-			format := v22_image_format(c.mime)
-			if format == "" {
+			format, ok := v22_image_format(c.mime)
+			if !ok {
 				return {}, .Not_In_Version
 			}
-			append(&data, format) or_return
+			append(&data, ..format[:]) or_return
 		} else {
 			encode_string(&data, .Latin1, c.mime, true) or_return
 		}
@@ -919,23 +922,31 @@ append_counter :: proc(data: ^[dynamic]u8, counter: u64) -> runtime.Allocator_Er
 	return err
 }
 
+// A MIME type ID3v2.2 has no name for is the image format itself when it is 3 Latin-1 characters,
+// as decode_picture reads a format it does not know.
 @(private)
-v22_image_format :: proc(mime: string) -> string {
+v22_image_format :: proc(mime: string) -> (format: [3]u8, ok: bool) {
 	switch {
 	case strings.equal_fold(mime, "image/jpeg"),
 	     strings.equal_fold(mime, "image/jpg"),
 	     strings.equal_fold(mime, "image/pjpeg"):
-		return "JPG"
+		return {'J', 'P', 'G'}, true
 	case strings.equal_fold(mime, "image/png"), strings.equal_fold(mime, "image/x-png"):
-		return "PNG"
+		return {'P', 'N', 'G'}, true
 	case strings.equal_fold(mime, "image/gif"):
-		return "GIF"
+		return {'G', 'I', 'F'}, true
 	case strings.equal_fold(mime, "image/bmp"):
-		return "BMP"
-	case len(mime) == 3:
-		return mime
+		return {'B', 'M', 'P'}, true
 	}
-	return ""
+	n := 0
+	for r in mime {
+		if n == len(format) || r > 0xFF {
+			return {}, false
+		}
+		format[n] = u8(r)
+		n += 1
+	}
+	return format, n == len(format)
 }
 
 // Re-encodes the text of a frame, or of every frame of a tag that holds text, chapters included.

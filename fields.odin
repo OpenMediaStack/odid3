@@ -694,8 +694,8 @@ set_genres :: proc(tag: ^Tag, genres: []string) -> Error {
 }
 
 // Replaces the pictures of the same type with picture, in the place of the first, or adds it. Its
-// data is copied. ID3v2.2 names the image format in 3 letters: a MIME type it has no name for
-// gives .Not_In_Version.
+// data is copied. ID3v2.2 names the image format in 3 letters (JPG for image/jpeg), and takes a
+// MIME type of 3 Latin-1 characters as the format itself: another gives .Not_In_Version.
 set_picture :: proc(tag: ^Tag, picture: Picture) -> Error {
 	adopt_context_allocator(tag)
 	if tag.version == .None {

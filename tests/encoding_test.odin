@@ -718,6 +718,52 @@ undecodable_layouts_keep_their_bytes :: proc(t: ^testing.T) {
 }
 
 @(test)
+reencoded_pictures_keep_their_image_format :: proc(t: ^testing.T) {
+	// A PIC's image format odid3 has no MIME type for is read as 3 Latin-1 characters and written
+	// back so when the picture is re-encoded, rather than refused and the whole tag with it.
+	format := []u8{'J', 0xE9, 'G'}
+	image := []u8{0, 0, 0xFF, 0xD8}
+	picture := frame22("PIC", concat({1}, format, {3}, utf16("d", .Little_Endian), image))
+	title := frame22("TT2", concat({1}, utf16("T", .Little_Endian)))
+	tags := read(t, tag_file(2, 0, picture, title))
+	defer odid3.destroy(&tags)
+	ordered, order_err := odid3.render(
+		&tags.v2,
+		{utf16_byte_order = .Big_Endian},
+		context.temp_allocator,
+	)
+	testing.expect_value(t, order_err, nil)
+	big := read(t, ordered)
+	defer odid3.destroy(&big)
+	expect_frames(
+		t,
+		&big.v2,
+		{
+			string(concat({1}, format, {3}, utf16("d", .Big_Endian), image)),
+			string(concat({1}, utf16("T", .Big_Endian))),
+		},
+	)
+	encoded, encoding_err := odid3.render(&tags.v2, {encoding = .Latin1}, context.temp_allocator)
+	testing.expect_value(t, encoding_err, nil)
+	latin1 := read(t, encoded)
+	defer odid3.destroy(&latin1)
+	in_latin1 := []string{string(concat({0}, format, text("\x03d\x00\xFF\xD8"))), "\x00T"}
+	expect_frames(t, &latin1.v2, in_latin1)
+	testing.expect_value(t, odid3.set_encoding(&tags.v2, odid3.Encoding.Latin1), nil)
+	expect_frames(t, &tags.v2, in_latin1)
+	testing.expect_value(
+		t,
+		odid3.set_encoding(&tags.v2.frames[0], .V2_2, odid3.Encoding.UTF16, .Big_Endian),
+		nil,
+	)
+	testing.expect_value(
+		t,
+		string(tags.v2.frames[0].data),
+		string(concat({1}, format, {3}, utf16("d", .Big_Endian), image)),
+	)
+}
+
+@(test)
 set_encoding_allocation_failures :: proc(t: ^testing.T) {
 	for name in ([]string{"v23_cover.mp3", "v24_unicode.mp3", "v24_chapters.mp3"}) {
 		succeeded := false

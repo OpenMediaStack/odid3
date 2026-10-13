@@ -690,7 +690,7 @@ change_picture_layout :: proc(
 		tag.allocator,
 	)
 	if encode_err == Error(Format_Error.Not_In_Version) {
-		// A MIME type ID3v2.2 has no 3 letter name for.
+		// A MIME type ID3v2.2 neither names nor holds in 3 Latin-1 characters.
 		return false, nil
 	}
 	if encode_err != nil {
