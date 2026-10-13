@@ -788,7 +788,7 @@ set_user_text :: proc(tag: ^Tag, description, value: string) -> Error {
 		destroy_content(&content, tag.allocator)
 		if matches {
 			if previous == nil {
-				previous = Text_Format{text.encoding, f.status}
+				previous = text_format(text.encoding, &f)
 			}
 			append(&remove, i) or_return
 		}
@@ -803,7 +803,7 @@ set_user_text :: proc(tag: ^Tag, description, value: string) -> Error {
 		values      = {value},
 	}
 	id := "TXX" if tag.version == .V2_2 else "TXXX"
-	frame := encode_frame(content, id, tag.version, tag.allocator) or_return
+	frame := encode_frame_in(content, id, tag.version, format.order, tag.allocator) or_return
 	frame.status = format.status
 	return edit_frames(tag, remove[:], {frame})
 }
@@ -840,11 +840,22 @@ set_comment :: proc(tag: ^Tag, text: string, description := "", language := "eng
 	return edit_frames(tag, remove[:], {frame})
 }
 
-// The format of a text frame to keep when it is rewritten: its encoding and status flags.
+// The format of a text frame to keep when it is rewritten: its encoding, status flags and UTF-16
+// byte order.
 @(private)
 Text_Format :: struct {
 	encoding: Encoding,
 	status:   Frame_Status,
+	order:    Byte_Order,
+}
+
+@(private)
+text_format :: proc(encoding: Encoding, f: ^Frame) -> Text_Format {
+	order: Byte_Order
+	if encoding == .UTF16 {
+		order, _, _ = utf16_order_of(f)
+	}
+	return {encoding, f.status, order}
 }
 
 // The format of the frame being replaced when its encoding can hold the new values; else its
@@ -859,7 +870,7 @@ keep_format :: proc(
 	if ok && encoding_holds(p.encoding, version, ..values) {
 		return p
 	}
-	return {default_encoding(version, ..values), p.status}
+	return {default_encoding(version, ..values), p.status, p.order}
 }
 
 // The encoding byte of a frame that starts with one.
@@ -961,7 +972,7 @@ comment_frames :: proc(tag: ^Tag) -> (found: [dynamic]Comment_Frame, err: Error)
 		if clone_err == nil {
 			_, clone_err = append(
 				&found,
-				Comment_Frame{i, c.language, description, {c.encoding, f.status}},
+				Comment_Frame{i, c.language, description, text_format(c.encoding, &f)},
 			)
 			if clone_err != nil {
 				delete(description, tag.allocator)
@@ -1000,10 +1011,11 @@ comment_frame :: proc(
 		description = description,
 		text        = text,
 	}
-	frame = encode_frame(
+	frame = encode_frame_in(
 		content,
 		"COM" if tag.version == .V2_2 else "COMM",
 		tag.version,
+		format.order,
 		tag.allocator,
 	) or_return
 	frame.status = format.status
@@ -1032,7 +1044,7 @@ find_user_text :: proc(
 		destroy_content(&content, tag.allocator)
 		if matches {
 			if previous == nil {
-				previous = Text_Format{encoding, f.status}
+				previous = text_format(encoding, &f)
 			}
 			append(remove, i) or_return
 		}
@@ -1125,7 +1137,13 @@ text_frame :: proc(
 	err: Error,
 ) {
 	format := keep_format(previous, tag.version, ..values)
-	frame = encode_frame(Text{format.encoding, values}, id, tag.version, tag.allocator) or_return
+	frame = encode_frame_in(
+		Text{format.encoding, values},
+		id,
+		tag.version,
+		format.order,
+		tag.allocator,
+	) or_return
 	frame.status = format.status
 	return
 }
@@ -1142,7 +1160,7 @@ set_text_values :: proc(tag: ^Tag, ids: []string, values: []string) -> Error {
 			continue
 		}
 		if encoding, ok := frame_encoding(&f); ok && previous == nil {
-			previous = Text_Format{encoding, f.status}
+			previous = text_format(encoding, &f)
 		}
 		append(&remove, i) or_return
 	}
@@ -1217,7 +1235,7 @@ set_date :: proc(tag: ^Tag, value: string) -> Error {
 			continue
 		}
 		if encoding, ok := frame_encoding(&f); ok && formats[k] == nil {
-			formats[k] = Text_Format{encoding, f.status}
+			formats[k] = text_format(encoding, &f)
 		}
 		append(&remove, i) or_return
 	}

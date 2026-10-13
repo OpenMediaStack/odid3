@@ -427,9 +427,11 @@ utf16_byte_order :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, marks > 0)
 	testing.expect_value(t, all_fields(&tags.v2), before)
-	big := odid3.render(&tags.v2, {padding = 0}, context.temp_allocator) or_else nil
+	big, big_err := odid3.render(&tags.v2, {padding = 0}, context.temp_allocator)
+	testing.expect_value(t, big_err, nil)
 	testing.expect_value(t, odid3.set_encoding(&tags.v2, .UTF16), nil)
-	same := odid3.render(&tags.v2, {padding = 0}, context.temp_allocator) or_else nil
+	same, same_err := odid3.render(&tags.v2, {padding = 0}, context.temp_allocator)
+	testing.expect_value(t, same_err, nil)
 	testing.expect(t, bytes.equal(big, same))
 
 	// On write: the tags stay big endian, the bytes are little endian.
@@ -473,4 +475,179 @@ utf16_byte_order :: proc(t: ^testing.T) {
 	defer odid3.destroy(&big_again)
 	testing.expect_value(t, all_fields(&big_again.v2), before)
 	testing.expect_value(t, text_frame_mark(big_again.v2.frames[0]), 0xFEFF)
+}
+
+// s in UTF-16 after its byte order mark.
+utf16 :: proc(s: string, order: odid3.Byte_Order) -> []u8 {
+	out := make([dynamic]u8, context.temp_allocator)
+	units := [2]u8{0xFF, 0xFE} if order == .Little_Endian else {0xFE, 0xFF}
+	append(&out, ..units[:])
+	for r in s {
+		hi, lo := u8(r >> 8), u8(r)
+		if order == .Little_Endian {
+			append(&out, lo, hi)
+		} else {
+			append(&out, hi, lo)
+		}
+	}
+	return out[:]
+}
+
+// The byte order marks of each kind in data.
+marks :: proc(data: []u8) -> (big, little: int) {
+	for i := 0; i + 1 < len(data); i += 1 {
+		switch {
+		case data[i] == 0xFE && data[i + 1] == 0xFF:
+			big += 1
+		case data[i] == 0xFF && data[i + 1] == 0xFE:
+			little += 1
+		}
+	}
+	return
+}
+
+@(test)
+frames_already_in_the_order_stay :: proc(t: ^testing.T) {
+	for order in odid3.Byte_Order {
+		le := order == .Little_Endian
+		frames := concat(
+			frame(3, "TCON", concat({1}, utf16("Rock", order), {0, 0}, utf16("Pop", order))),
+			frame(3, "TPE1", concat({1}, utf16("A", order), {0, 0}, utf16("B", order))),
+			frame(3, "WXXX", concat({1}, utf16("", order), {0, 0}, text("http://x\x00junk"))),
+			// A lone surrogate, which re-encoding would not keep.
+			frame(3, "TALB", concat({1}, utf16("", order), {0x00, 0xD8} if le else {0xD8, 0x00})),
+			frame(3, "TIT3", text("\x00Latin")),
+		)
+		tags := read(t, tag_file(3, 0, frames))
+		defer odid3.destroy(&tags)
+		rendered, err := odid3.render(
+			&tags.v2,
+			{padding = 0, utf16_byte_order = order},
+			context.temp_allocator,
+		)
+		testing.expect_value(t, err, nil)
+		testing.expectf(
+			t,
+			bytes.equal(rendered, concat(v2_header(3, 0, len(frames)), frames)),
+			"%v: %x",
+			order,
+			rendered,
+		)
+		testing.expect_value(t, odid3.set_encoding(&tags.v2, .UTF16, order), nil)
+		testing.expectf(
+			t,
+			bytes.equal(tags.v2.frames[0].data, frames[10:][:len(tags.v2.frames[0].data)]),
+			"%v: set_encoding changed TCON",
+			order,
+		)
+	}
+}
+
+@(test)
+every_utf16_string_takes_the_order :: proc(t: ^testing.T) {
+	v23 := concat(
+		frame(
+			3,
+			"COMM",
+			concat(
+				{1},
+				text("eng"),
+				utf16("desc", .Little_Endian),
+				{0, 0},
+				utf16("text", .Little_Endian),
+			),
+		),
+		frame(
+			3,
+			"TXXX",
+			concat({1}, utf16("mood", .Little_Endian), {0, 0}, utf16("Calm", .Little_Endian)),
+		),
+		frame(3, "WXXX", concat({1}, utf16("site", .Little_Endian), {0, 0}, text("http://x"))),
+		frame(
+			3,
+			"APIC",
+			concat(
+				{1},
+				text("image/png\x00\x03"),
+				utf16("cover", .Little_Endian),
+				{0, 0},
+				{0x89, 'P', 'N', 'G'},
+			),
+		),
+		frame(3, "TIT2", concat({1}, utf16("Title", .Little_Endian))),
+		frame(3, "TPE1", text("\x00Latin")),
+	)
+	tags := read(t, tag_file(3, 0, v23))
+	defer odid3.destroy(&tags)
+	before := all_fields(&tags.v2)
+	testing.expect_value(t, odid3.set_encoding(&tags.v2, .UTF16, odid3.Byte_Order.Big_Endian), nil)
+	strings := [?]int{2, 2, 1, 1, 1, 1}
+	for n, i in strings {
+		big, little := marks(tags.v2.frames[i].data)
+		testing.expectf(
+			t,
+			big == n && little == 0,
+			"%s: %x",
+			tags.v2.frames[i].id,
+			tags.v2.frames[i].data,
+		)
+	}
+	testing.expect_value(t, all_fields(&tags.v2), before)
+
+	// Once more changes nothing, and a setter keeps the order.
+	data := tags.v2.frames[0].data
+	testing.expect_value(t, odid3.set_encoding(&tags.v2, .UTF16, odid3.Byte_Order.Big_Endian), nil)
+	testing.expect(t, raw_data(tags.v2.frames[0].data) == raw_data(data))
+	testing.expect_value(t, odid3.set(&tags.v2, .Title, "Bé"), nil)
+	for f in tags.v2.frames {
+		if f.id == "TIT2" {
+			big, little := marks(f.data)
+			testing.expectf(t, big == 1 && little == 0, "%x", f.data)
+		}
+	}
+
+	// The option with the encoding the version lacks, and with Latin-1.
+	_, err := odid3.render(
+		&tags.v2,
+		{encoding = .UTF16BE, utf16_byte_order = .Big_Endian},
+		context.temp_allocator,
+	)
+	testing.expect_value(t, err, odid3.Error(odid3.Format_Error.Encoding_Not_In_Version))
+	latin1 := read(t, fixture(t, "v23_full.mp3"))
+	defer odid3.destroy(&latin1)
+	rendered, latin1_err := odid3.render(
+		&latin1.v2,
+		{padding = 0, encoding = .Latin1, utf16_byte_order = .Big_Endian},
+		context.temp_allocator,
+	)
+	testing.expect_value(t, latin1_err, nil)
+	plain, _ := odid3.render(&latin1.v2, {padding = 0}, context.temp_allocator)
+	testing.expect(t, bytes.equal(rendered, plain))
+}
+
+@(test)
+byte_order_allocation_failures :: proc(t: ^testing.T) {
+	for name in ([]string{"v23_unicode.mp3", "v24_chapters.mp3"}) {
+		tags := read(t, fixture(t, name))
+		defer odid3.destroy(&tags)
+		rendered := false
+		for budget in 0 ..< 256 {
+			failing := Failing{context.allocator, budget}
+			allocator := failing_allocator(&failing)
+			out, err := odid3.render(&tags.v2, {utf16_byte_order = .Big_Endian}, allocator)
+			if err == nil {
+				delete(out, allocator)
+				rendered = true
+				break
+			}
+			testing.expectf(
+				t,
+				err == odid3.Error(mem.Allocator_Error.Out_Of_Memory),
+				"%s: %v",
+				name,
+				err,
+			)
+		}
+		testing.expectf(t, rendered, "%s never rendered", name)
+	}
 }

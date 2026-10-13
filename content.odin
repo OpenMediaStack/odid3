@@ -330,6 +330,52 @@ decode_values :: proc(
 	return
 }
 
+// The byte order of a UTF-16 frame's text as decoding reads it: that of its first string's byte
+// order mark, little endian without one, followed by the strings after it without a mark. mixed
+// is true when a later string's mark says otherwise; known is false for a layout odid3 does not
+// decode.
+@(private)
+utf16_order_of :: proc(f: ^Frame) -> (order: Byte_Order, mixed, known: bool) {
+	text: []u8
+	only_first := false
+	switch f.id {
+	case "COMM", "COM", "USLT", "ULT":
+		text = f.data[min(4, len(f.data)):]
+	case "APIC":
+		nul := bytes.index_byte(f.data[1:], 0)
+		text = f.data[min(nul + 3, len(f.data)):] if nul >= 0 else nil
+		only_first = true
+	case "PIC":
+		text, only_first = f.data[min(5, len(f.data)):], true
+	case "WXXX", "WXX":
+		text, only_first = f.data[1:], true
+	case:
+		if len(f.id) == 0 || f.id[0] != 'T' && !is_itunes_text_frame(f.id) {
+			return .Little_Endian, false, false
+		}
+		text = f.data[1:]
+	}
+	for rest, first := text, true; len(rest) > 0; first = false {
+		s: []u8
+		s, rest, _ = split_terminated(.UTF16, rest)
+		mark: Maybe(Byte_Order)
+		if len(s) >= 2 && s[0] == 0xFE && s[1] == 0xFF {
+			mark = .Big_Endian
+		} else if len(s) >= 2 && s[0] == 0xFF && s[1] == 0xFE {
+			mark = .Little_Endian
+		}
+		if first {
+			order = mark.? or_else .Little_Endian
+			if only_first {
+				break
+			}
+		} else if m, marked := mark.?; marked && m != order {
+			mixed = true
+		}
+	}
+	return order, mixed, true
+}
+
 // ID3v2.4, section 4: all the UTF-16 strings of a frame share one byte order, so a string
 // without a byte order mark follows the order of the first one. Decoding a string as UTF16BE
 // still honours its own byte order mark.
@@ -863,8 +909,9 @@ v22_image_format :: proc(mime: string) -> string {
 // lacks .Encoding_Not_In_Version. A frame already in the encoding is left as it is. Text that would
 // not survive (characters after a comment's end, UTF-16 that is not valid) gives .Bad_Content
 // rather than being changed; before ID3v2.4, several values are joined with "/". UTF-16 with a
-// byte order mark is written in byte_order; nil keeps that of a frame already in UTF-16 and writes
-// the others little endian.
+// byte order mark is written in byte_order, and a frame already in the encoding but in the other
+// order is re-encoded; nil keeps the order of a frame already in UTF-16 and writes the others
+// little endian.
 set_encoding :: proc {
 	set_frame_encoding,
 	set_tag_encoding,
@@ -1047,13 +1094,19 @@ reencoded :: proc(
 	if !has_encoding_byte(f.id) || len(f.data) == 0 {
 		return
 	}
-	encoding := asked.? or_else Encoding(f.data[0])
-	ordered := order != nil && encoding == .UTF16
-	if f.data[0] == u8(encoding) && !ordered {
-		return
-	}
 	if is_stored(f) || f.problem == .Skipped_Picture {
 		return {}, false, true, nil
+	}
+	encoding := asked.? or_else Encoding(f.data[0])
+	if f.data[0] == u8(encoding) {
+		wanted, ordered := order.?
+		if !ordered || encoding != .UTF16 {
+			return
+		}
+		current, mixed, known := utf16_order_of(f)
+		if known && !mixed && current == wanted {
+			return
+		}
 	}
 	if _, known := encoding_of(f.data[0]); !known {
 		return

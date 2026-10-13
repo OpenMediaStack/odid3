@@ -327,7 +327,7 @@ convert_date :: proc(
 @(private)
 format_of :: proc(f: ^Frame) -> Maybe(Text_Format) {
 	if encoding, ok := frame_encoding(f); ok {
-		return Text_Format{encoding, f.status}
+		return text_format(encoding, f)
 	}
 	return nil
 }
@@ -447,7 +447,7 @@ convert_people :: proc(
 	defer delete(data)
 	append(&data, u8(format.encoding)) or_return
 	for value in people {
-		encode_string(&data, format.encoding, value, true) or_return
+		encode_string(&data, format.encoding, value, true, format.order) or_return
 	}
 	frame := make_frame(
 		"TIPL" if tag.version == .V2_4 else "IPLS",

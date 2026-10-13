@@ -25,9 +25,11 @@ Write_Options :: struct {
 	// encoding the version lacks gives Encoding_Not_In_Version, text it cannot hold Not_Encodable,
 	// text that would not survive Bad_Content, and nothing is written.
 	encoding:          Maybe(Encoding),
-	// The byte order of UTF-16 text with a byte order mark (.UTF16), in every frame that holds it
-	// once encoding applies; nil keeps each frame's, and writes frames encoding re-encodes little
-	// endian. The frames are re-encoded on a copy as set_encoding does.
+	// The byte order of UTF-16 text with a byte order mark (.UTF16), in every text frame that holds
+	// it once encoding applies; nil keeps each frame's, and writes frames encoding re-encodes
+	// little endian. A frame already in the order is left as it is; the others are re-encoded on a
+	// copy as set_encoding does, with the same exceptions (SYLT, GEOB, USER, OWNE, COMR, IPLS and
+	// encrypted frames keep theirs) and errors (Bad_Content for text that would not survive).
 	utf16_byte_order:  Maybe(Byte_Order),
 	// The text encoding of ID3v1; nil keeps that of tags.v1 (UTF-8 when its text was read as
 	// UTF-8). sync_v1 and v1_from_tag do not see it: give them the same encoding to know what
