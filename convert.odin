@@ -4,7 +4,8 @@ import "base:runtime"
 import "core:slice"
 import "core:strings"
 
-// A frame a conversion removed, or carried only in part, and why.
+// A frame a conversion removed, or carried only in part, and why. The frames of an ID3v2.2 tag are
+// listed under their 3 letter IDs.
 Dropped_Frame :: struct {
 	id:     string,
 	reason: Drop_Reason,
@@ -138,7 +139,8 @@ convert_versions :: proc(
 	if to == .None {
 		return convert_frames(tag, to, dropped, allocator)
 	}
-	if tag.version == .V2_2 {
+	from_v22 := tag.version == .V2_2
+	if from_v22 {
 		convert_from_v22(tag, dropped, allocator) or_return
 	}
 	// Going to ID3v2.2, an ID3v2.3 tag needs the same care as one from ID3v2.4: dates, people and
@@ -146,6 +148,9 @@ convert_versions :: proc(
 	middle := V2_Version.V2_3 if to == .V2_2 else to
 	if tag.version != middle || to == .V2_2 {
 		convert_frames(tag, middle, dropped, allocator) or_return
+	}
+	if from_v22 {
+		restore_v22_ids(dropped, allocator) or_return
 	}
 	if to == .V2_2 {
 		convert_to_v22(tag, dropped, allocator) or_return
@@ -530,6 +535,20 @@ convert_from_v22 :: proc(
 		}
 	}
 	tag.version = .V2_3
+	return nil
+}
+
+// The frames of an ID3v2.2 tag are listed under their ID3v2.3 IDs by the steps after the renaming;
+// they get back the IDs of the tag the caller converts.
+@(private)
+restore_v22_ids :: proc(dropped: ^Dropped_Frames, allocator: runtime.Allocator) -> Error {
+	for &d in dropped {
+		if id := v23_to_v22(d.id); id != "" {
+			restored := strings.clone(id, allocator) or_return
+			delete(d.id, allocator)
+			d.id = restored
+		}
+	}
 	return nil
 }
 
