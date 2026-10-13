@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  ODIN_RELEASE: dev-2026-10
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    name: Publish the release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: VERSION matches the tag
+        run: |
+          version=$(sed -n 's/^VERSION :: "\(.*\)"$/\1/p' odid3.odin)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::odid3.odin says VERSION :: \"$version\", the tag is $GITHUB_REF_NAME"
+            exit 1
+          fi
+      - uses: laytan/setup-odin@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release: ${{ env.ODIN_RELEASE }}
+      - name: Check
+        run: odin check . -no-entry-point -vet -strict-style
+      - name: Test
+        run: odin test tests -vet -strict-style -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
+      - name: Internal tests
+        run: odin test . -vet -strict-style -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
+      - name: Write the notes since the previous tag
+        id: notes
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+      - name: Publish the release
+        uses: softprops/action-gh-release@v3
+        with:
+          body: ${{ steps.notes.outputs.content }}

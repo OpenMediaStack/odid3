@@ -96,6 +96,24 @@ jobs:
             exit 1
           fi
 
+  release-notes:
+    name: Release notes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Write the notes of the next release
+        id: notes
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --unreleased --strip header
+      - name: Show them
+        env:
+          NOTES: ${{ steps.notes.outputs.content }}
+        run: printf '%s\n' "$NOTES" >> "$GITHUB_STEP_SUMMARY"
+
   yamllint:
     name: YAML Lint
     runs-on: ubuntu-latest
