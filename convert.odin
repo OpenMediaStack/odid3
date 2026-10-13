@@ -33,9 +33,10 @@ Drop_Reason :: enum u8 {
 	Tag_Removed,
 	// Converted, but part of its value has no place in the target version: a date's seconds or a
 	// month without its day in ID3v2.3, values after the first, the group of a frame merged into
-	// a frame of another group; or re-encoded without what its text held that does not decode
-	// (bytes other than NULs after a comment, lyrics or the URL of a WXXX, a UTF-16 surrogate
-	// without its pair, which becomes U+FFFD, an odd last byte of UTF-16 text other than a NUL).
+	// a frame of another group, an ID3v2.2 image format from its NUL on, which ends an APIC's MIME
+	// type; or re-encoded without what its text held that does not decode (bytes other than NULs
+	// after a comment, lyrics or the URL of a WXXX, a UTF-16 surrogate without its pair, which
+	// becomes U+FFFD, an odd last byte of UTF-16 text other than a NUL).
 	Partly_Converted,
 }
 
@@ -654,7 +655,8 @@ rename_frame :: proc(f: ^Frame, id: string) -> runtime.Allocator_Error {
 
 // APIC holds a MIME type where PIC holds a 3 character image format: the picture is decoded and
 // encoded again, in its encoding and byte order when the target version has that encoding, and
-// listed when its description does not decode whole. ok is false when it cannot be decoded, or
+// listed when its description does not decode whole or its image format holds a NUL, which ends a
+// MIME type: the MIME type keeps what comes before it. ok is false when it cannot be decoded, or
 // when ID3v2.2 has no image format for its MIME type.
 @(private)
 change_picture_layout :: proc(
@@ -682,6 +684,10 @@ change_picture_layout :: proc(
 	}
 	format := keep_format(text_format(picture.encoding, f), to, picture.description)
 	picture.encoding = format.encoding
+	nul := strings.index_byte(picture.mime, 0)
+	if nul >= 0 {
+		picture.mime = picture.mime[:nul]
+	}
 	replacement, encode_err := encode_frame_in(
 		picture,
 		id_in_tag(.APIC, to),
@@ -696,7 +702,7 @@ change_picture_layout :: proc(
 	if encode_err != nil {
 		return false, encode_err
 	}
-	if !text_survives(f, &content) {
+	if nul >= 0 || !text_survives(f, &content) {
 		if err = note(dropped, f.id, .Partly_Converted, allocator); err != nil {
 			destroy_frame(&replacement)
 			return false, err
