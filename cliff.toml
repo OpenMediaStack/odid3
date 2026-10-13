@@ -19,6 +19,8 @@ filter_unconventional = false
 tag_pattern = "v[0-9].*"
 sort_commits = "newest"
 commit_parsers = [
+  # The merge commit GitHub makes to test a pull request, in the CI's preview.
+  { message = "^Merge [0-9a-f]+ into [0-9a-f]+$", skip = true },
   { message = "^feat", group = "<!-- 0 -->Features" },
   { message = "^fix", group = "<!-- 1 -->Bug fixes" },
   { message = "^perf", group = "<!-- 2 -->Performance" },
