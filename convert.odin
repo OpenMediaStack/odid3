@@ -266,10 +266,11 @@ drop_reason_of :: proc(f: ^Frame) -> Drop_Reason {
 }
 
 // The first value of a text frame, cloned with the tag's allocator; ok is false when the frame
-// does not decode as text. Read as ID3v2.4 reads it, several tells whether text follows a
-// terminator, which the conversion cannot carry.
+// does not decode as text. partly tells whether the frame holds what the value cannot carry: text
+// after a terminator, read as ID3v2.4 reads it, or text that does not decode whole (a UTF-16
+// surrogate without its pair, which becomes U+FFFD, or an odd last byte other than a NUL).
 @(private)
-first_value :: proc(tag: ^Tag, f: ^Frame) -> (value: string, several, ok: bool, err: Error) {
+first_value :: proc(tag: ^Tag, f: ^Frame) -> (value: string, partly, ok: bool, err: Error) {
 	content := decode_owned(f, .V2_4, tag.allocator) or_return
 	defer destroy_content(&content, tag.allocator)
 	text, is_text := content.(Text)
@@ -277,7 +278,7 @@ first_value :: proc(tag: ^Tag, f: ^Frame) -> (value: string, several, ok: bool, 
 		return "", false, false, nil
 	}
 	value = strings.clone(text.values[0], tag.allocator) or_return
-	return value, len(text.values) > 1, true, nil
+	return value, len(text.values) > 1 || !text_survives(f, &content), true, nil
 }
 
 // Puts frames where the frame at index was, in its place; the tag takes them.
@@ -377,7 +378,7 @@ convert_original_year :: proc(
 	if at < 0 {
 		return nil
 	}
-	value, several, ok := first_value(tag, &tag.frames[at]) or_return
+	value, partly, ok := first_value(tag, &tag.frames[at]) or_return
 	defer delete(value, tag.allocator)
 	carried := value
 	if tag.version != .V2_4 {
@@ -392,7 +393,7 @@ convert_original_year :: proc(
 	frame := text_frame(tag, target, {carried}, format_of(&tag.frames[at])) or_return
 	carry_format(&frame, &tag.frames[at])
 	replace_frame(tag, at, {frame}) or_return
-	if several || len(carried) < len(value) {
+	if partly || len(carried) < len(value) {
 		note(dropped, source, .Partly_Converted, allocator) or_return
 	}
 	return nil
@@ -422,16 +423,19 @@ convert_people :: proc(
 			i += 1
 			continue
 		}
-		ok := people_of_frame(f, &people, tag.allocator) or_return
+		ok, whole := people_of_frame(f, &people, tag.allocator) or_return
 		switch {
 		case !ok:
 			drop(tag, i, drop_reason_of(f), dropped, allocator) or_return
 		case at < 0:
+			if !whole {
+				note(dropped, f.id, .Partly_Converted, allocator) or_return
+			}
 			at = i
 			previous = format_of(f)
 			i += 1
 		case:
-			if !same_group(f, &tag.frames[at]) {
+			if !whole || !same_group(f, &tag.frames[at]) {
 				note(dropped, f.id, .Partly_Converted, allocator) or_return
 			}
 			remove_frame(tag, i)
@@ -461,36 +465,44 @@ convert_people :: proc(
 	return replace_frame(tag, at, {frame})
 }
 
-// Appends the strings of a people frame, padded to whole pairs; ok is false when it does not
-// decode.
+// Appends the strings of a people frame, padded to whole pairs, each read in the byte order
+// decode_values reads it in; ok is false when the frame does not decode, whole is false when a
+// string does not decode whole (a UTF-16 surrogate without its pair, which becomes U+FFFD, or an
+// odd last byte other than a NUL).
 @(private)
 people_of_frame :: proc(
 	f: ^Frame,
 	people: ^[dynamic]string,
 	allocator: runtime.Allocator,
 ) -> (
-	ok: bool,
+	ok, whole: bool,
 	err: Error,
 ) {
 	encoding, known := frame_encoding(f)
 	if !known {
-		return false, nil
+		return false, false, nil
 	}
+	whole = true
+	order := encoding
 	count := 0
 	for rest := f.data[1:]; len(rest) > 0; {
 		text: []u8
 		text, rest, _ = split_terminated(encoding, rest)
-		value := decode_text(encoding, text, allocator) or_return
+		whole = whole && decodes_whole(order, text)
+		value := decode_text(order, text, allocator) or_return
 		if _, append_err := append(people, value); append_err != nil {
 			delete(value, allocator)
-			return false, append_err
+			return false, false, append_err
+		}
+		if count == 0 {
+			order = byte_order_of(order, text)
 		}
 		count += 1
 	}
 	if count % 2 == 1 {
 		append(people, "") or_return
 	}
-	return true, nil
+	return true, whole, nil
 }
 
 // Renames ID3v2.2 frames to their ID3v2.3 IDs, turns PIC into APIC, and drops the frames ID3v2.3
@@ -507,7 +519,8 @@ convert_from_v22 :: proc(
 		switch {
 		case id == "":
 			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
-		case f.id == "PIC" && !(change_picture_layout(tag, i, .V2_2, .V2_3) or_return):
+		case f.id == "PIC" &&
+		     !(change_picture_layout(tag, i, .V2_2, .V2_3, dropped, allocator) or_return):
 			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
 		case f.id == "PIC":
 			i += 1
@@ -540,7 +553,8 @@ convert_to_v22 :: proc(
 			drop(tag, i, .Grouped, dropped, allocator) or_return
 		case id == "":
 			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
-		case f.id == "APIC" && !(change_picture_layout(tag, i, .V2_3, .V2_2) or_return):
+		case f.id == "APIC" &&
+		     !(change_picture_layout(tag, i, .V2_3, .V2_2, dropped, allocator) or_return):
 			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
 		case f.id == "APIC":
 			i += 1
@@ -582,12 +596,15 @@ rename_frame :: proc(f: ^Frame, id: string) -> runtime.Allocator_Error {
 }
 
 // APIC holds a MIME type where PIC holds a 3 character image format: the picture is decoded and
-// encoded again. ok is false when it cannot be decoded.
+// encoded again, and listed when its description does not decode whole. ok is false when it cannot
+// be decoded, or when ID3v2.2 has no image format for its MIME type.
 @(private)
 change_picture_layout :: proc(
 	tag: ^Tag,
 	index: int,
 	from, to: V2_Version,
+	dropped: ^Dropped_Frames,
+	allocator: runtime.Allocator,
 ) -> (
 	ok: bool,
 	err: Error,
@@ -620,6 +637,12 @@ change_picture_layout :: proc(
 	}
 	if encode_err != nil {
 		return false, encode_err
+	}
+	if !text_survives(f, &content) {
+		if err = note(dropped, f.id, .Partly_Converted, allocator); err != nil {
+			destroy_frame(&replacement)
+			return false, err
+		}
 	}
 	if to != .V2_2 {
 		replacement.status = f.status
@@ -942,17 +965,18 @@ date_to_v24 :: proc(
 	defer delete(year, tag.allocator)
 	defer delete(day_month, tag.allocator)
 	defer delete(hours, tag.allocator)
-	several, year_ok, day_ok, time_ok: bool
+	partly: [4]bool
+	year_ok, day_ok, time_ok: bool
 	// A TDRC already there wins over the ID3v2.3 parts.
 	if first[0] < 0 {
 		if first[1] >= 0 {
-			year, several, year_ok = first_value(tag, &tag.frames[first[1]]) or_return
+			year, partly[1], year_ok = first_value(tag, &tag.frames[first[1]]) or_return
 		}
 		if first[2] >= 0 {
-			day_month, _, day_ok = first_value(tag, &tag.frames[first[2]]) or_return
+			day_month, partly[2], day_ok = first_value(tag, &tag.frames[first[2]]) or_return
 		}
 		if first[3] >= 0 {
-			hours, _, time_ok = first_value(tag, &tag.frames[first[3]]) or_return
+			hours, partly[3], time_ok = first_value(tag, &tag.frames[first[3]]) or_return
 		}
 	}
 	full_year := year_ok && len(year) == 4 && is_number(year)
@@ -987,11 +1011,8 @@ date_to_v24 :: proc(
 		}
 	}
 	value := strings.to_string(date) if full_year else year
-	if several {
-		note(dropped, "TYER", .Partly_Converted, allocator) or_return
-	}
-	for k in 2 ..= 3 {
-		if used[k] && !same_group(&tag.frames[first[k]], &tag.frames[first[1]]) {
+	for k in 1 ..= 3 {
+		if used[k] && (partly[k] || !same_group(&tag.frames[first[k]], &tag.frames[first[1]])) {
 			note(dropped, ids[k], .Partly_Converted, allocator) or_return
 		}
 	}
@@ -1021,7 +1042,7 @@ date_to_v23 :: proc(
 			note(dropped, ids[k], .No_Equivalent, allocator) or_return
 		}
 	}
-	value, several, ok := first_value(tag, &tag.frames[first[0]]) or_return
+	value, partly, ok := first_value(tag, &tag.frames[first[0]]) or_return
 	defer delete(value, tag.allocator)
 	if !ok || len(value) < 4 || !is_number(value[:4]) {
 		note(dropped, "TDRC", .No_Equivalent, allocator) or_return
@@ -1067,7 +1088,7 @@ date_to_v23 :: proc(
 		frames[n] = frame
 		n += 1
 	}
-	if several || len(value) > carried {
+	if partly || len(value) > carried {
 		if err := note(dropped, "TDRC", .Partly_Converted, allocator); err != nil {
 			for &f in frames[:n] {
 				destroy_frame(&f)
