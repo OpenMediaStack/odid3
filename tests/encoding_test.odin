@@ -1,5 +1,6 @@
 package odid3_tests
 
+import "core:bytes"
 import "core:mem"
 import "core:testing"
 
@@ -399,4 +400,77 @@ encoding_option_allocation_failures :: proc(t: ^testing.T) {
 		}
 		testing.expectf(t, rendered, "%s never rendered", name)
 	}
+}
+
+// The byte order mark of a UTF-16 text frame, or 0 when it has none.
+text_frame_mark :: proc(f: odid3.Frame) -> (mark: u16) {
+	if len(f.data) >= 3 && f.data[0] == u8(odid3.Encoding.UTF16) {
+		mark = u16(f.data[1]) << 8 | u16(f.data[2])
+	}
+	return
+}
+
+@(test)
+utf16_byte_order :: proc(t: ^testing.T) {
+	tags := read(t, fixture(t, "v23_full.mp3"))
+	defer odid3.destroy(&tags)
+	before := all_fields(&tags.v2)
+
+	// In place: every text frame in big endian UTF-16, then left so without an order.
+	testing.expect_value(t, odid3.set_encoding(&tags.v2, .UTF16, odid3.Byte_Order.Big_Endian), nil)
+	marks := 0
+	for f in tags.v2.frames {
+		if f.id[0] == 'T' {
+			testing.expectf(t, text_frame_mark(f) == 0xFEFF, "%s: %x", f.id, f.data)
+			marks += 1
+		}
+	}
+	testing.expect(t, marks > 0)
+	testing.expect_value(t, all_fields(&tags.v2), before)
+	big := odid3.render(&tags.v2, {padding = 0}, context.temp_allocator) or_else nil
+	testing.expect_value(t, odid3.set_encoding(&tags.v2, .UTF16), nil)
+	same := odid3.render(&tags.v2, {padding = 0}, context.temp_allocator) or_else nil
+	testing.expect(t, bytes.equal(big, same))
+
+	// On write: the tags stay big endian, the bytes are little endian.
+	little, err := odid3.render(
+		&tags.v2,
+		{padding = 0, utf16_byte_order = .Little_Endian},
+		context.temp_allocator,
+	)
+	testing.expect_value(t, err, nil)
+	again := read(t, concat(little, fixture(t, "no_tag.mp3")))
+	defer odid3.destroy(&again)
+	testing.expect_value(t, all_fields(&again.v2), before)
+	for f in again.v2.frames {
+		if f.id[0] == 'T' {
+			testing.expectf(t, text_frame_mark(f) == 0xFFFE, "%s: %x", f.id, f.data)
+		}
+	}
+	for f in tags.v2.frames {
+		if f.id[0] == 'T' {
+			testing.expectf(t, text_frame_mark(f) == 0xFEFF, "%s changed", f.id)
+		}
+	}
+
+	// One frame, and the order with another encoding.
+	title := &again.v2.frames[0]
+	testing.expect_value(
+		t,
+		odid3.set_encoding(title, .V2_3, .UTF16, odid3.Byte_Order.Big_Endian),
+		nil,
+	)
+	testing.expect_value(t, text_frame_mark(title^), 0xFEFF)
+	latin1 := read(t, fixture(t, "v23_full.mp3"))
+	defer odid3.destroy(&latin1)
+	rendered, render_err := odid3.render(
+		&latin1.v2,
+		{encoding = .UTF16, utf16_byte_order = .Big_Endian},
+		context.temp_allocator,
+	)
+	testing.expect_value(t, render_err, nil)
+	big_again := read(t, concat(rendered, fixture(t, "no_tag.mp3")))
+	defer odid3.destroy(&big_again)
+	testing.expect_value(t, all_fields(&big_again.v2), before)
+	testing.expect_value(t, text_frame_mark(big_again.v2.frames[0]), 0xFEFF)
 }
