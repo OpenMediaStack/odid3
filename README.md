@@ -66,13 +66,19 @@ print_tags :: proc(path: string) -> id3.Error {
 }
 ```
 
-A damaged file is not an error: `read_file` returns what it could read, and `tags.warnings` says what was wrong. `Frame_Problems` means some frames were damaged: each frame's `problem` says how, and a decoded chapter has its own `warnings` for the frames inside it. For a fast scan, `id3.Read_Options{skip_picture_data = true}` leaves the pictures' data unread; tags read so cannot be written.
+A damaged file is not an error: `read_file` returns what it could read, and `tags.warnings` says what was wrong. `Frame_Problems` means some frames were damaged: each frame's `problem` says how, and a decoded chapter has its own `warnings` for the frames inside it. For a fast scan, `id3.Read_Options{skip_picture_data = true}` leaves the pictures' data unread; tags read so cannot be written (`Incomplete_Tag`).
 
 Reading is thread safe: any number of threads can read files at once. A tag keeps using the allocator it was read with when it is edited later, so read with an allocator every thread may use, or `clone` the tags to another allocator before handing them over.
 
 ### The raw frame view
 
-Each frame has its `id`, its `offset` in the file (-1 for a frame added or rebuilt since), the `size` its header gives, its `status` and `format` flags, its `data`, and a `problem` when the data is not its content (encrypted, badly compressed).
+Each frame has:
+
+- its `id`, and its `offset` in the file (-1 for a frame added or rebuilt since);
+- the `size` its header gives, and `stored_flags`, the two flag bytes of its header as read;
+- its `status` flags (`Discard_On_Tag_Alter`, `Discard_On_File_Alter`, `Read_Only`) and `format` flags (`Grouping`, `Compression`, `Encryption`, `Unsynchronisation`, `Data_Length_Indicator`), with the same names in ID3v2.3 and 2.4 (the last two exist in ID3v2.4 only);
+- its `group` byte and encryption `method` when its format has them, and `data_length`, the data length indicator of ID3v2.4 or the decompressed size of ID3v2.3 (-1 when it has none);
+- its `data`, with unsynchronisation undone and compressed content inflated, and a `problem` when the data is not its content (encrypted, badly compressed, too short for its flags).
 
 ```odin
 for &frame in tags.v2.frames {
@@ -113,7 +119,34 @@ retitle :: proc(path, cover_path: string) -> id3.Error {
 
 `write_file` writes the new file next to the original, with its permissions, and renames it over it; through a symbolic link, the file it points to is rewritten. On any error the original is untouched. A read-only file is refused. The tags are located again in the file as it is when writing, so its audio is never taken from an old read, but tags another program wrote since `read_file` are replaced; a file that changes during the write itself gives `File_Changed`. `write_bytes` rebuilds a file in memory.
 
-A tag read with damage warnings (`DAMAGE_WARNINGS`), or a file holding a second ID3v2 tag, is only rewritten with `Write_Options.replace_damaged`, since what could not be read would be lost: `Damaged_Tag` is the cue to ask. `Error` is a union of `Format_Error`, `os.Error` and `runtime.Allocator_Error`.
+A tag read with damage warnings (`DAMAGE_WARNINGS`), or a file holding a second ID3v2 tag, is only rewritten with `Write_Options.replace_damaged`, since what could not be read would be lost.
+
+`Error` is a union of `Format_Error`, `os.Error` and `runtime.Allocator_Error`. The format errors a write gives tell what to do next:
+
+```odin
+save :: proc(path: string, tags: ^id3.Tags) {
+	switch e in id3.write_file(path, tags) {
+	case nil:
+	case id3.Format_Error:
+		#partial switch e {
+		case .Damaged_Tag:
+			// What could not be read would be lost: ask, then write with replace_damaged.
+		case .File_Changed:
+			// Another program wrote the file meanwhile: read it again.
+		case .Incomplete_Tag:
+			// Read with skip_picture_data: read it again without.
+		case .Not_Encodable, .Encoding_Not_In_Version:
+			// The text or the version needs another encoding.
+		case:
+			fmt.println("cannot write", path, e)
+		}
+	case os.Error:
+		fmt.println("cannot write", path, os.error_string(e))
+	case runtime.Allocator_Error:
+		fmt.println("out of memory")
+	}
+}
+```
 
 An ID3v1 tag whose values are unchanged keeps its bytes. A changed one is written from `tags.v1` in its `encoding`: Latin-1, the spec's (with `?` for what Latin-1 lacks), or UTF-8 when its text was read as UTF-8, as ffmpeg and some taggers write it. `Write_Options.v1_encoding` forces one or the other. `sync_v1` rebuilds ID3v1 from the fields, in the encoding it is given (the same as the write option's, when one is set) or the one the file had, and returns the fields that do not fit (characters in Latin-1, bytes in UTF-8); on a `clone` of the tags, it previews them.
 
