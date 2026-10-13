@@ -188,7 +188,7 @@ convert_frames :: proc(
 		}
 	}
 	for i in 0 ..< len(tag.frames) {
-		if tag.frames[i].id == "CHAP" || tag.frames[i].id == "CTOC" {
+		if is_kind(tag.frames[i].id, {.CHAP, .CTOC}) {
 			convert_chapter(tag, i, to, dropped, allocator) or_return
 		}
 	}
@@ -307,15 +307,9 @@ convert_date :: proc(
 	dropped: ^Dropped_Frames,
 	allocator: runtime.Allocator,
 ) -> Error {
-	first := [4]int{-1, -1, -1, -1} // TDRC, TYER, TDAT, TIME
-	ids := [4]string{"TDRC", "TYER", "TDAT", "TIME"}
+	first := [len(DATE_KINDS)]int{-1, -1, -1, -1}
 	for i := 0; i < len(tag.frames); {
-		k := -1
-		for id, j in ids {
-			if tag.frames[i].id == id {
-				k = j
-			}
-		}
+		k := date_part(tag.frames[i].id)
 		switch {
 		case k < 0:
 			i += 1
@@ -367,13 +361,13 @@ convert_original_year :: proc(
 	dropped: ^Dropped_Frames,
 	allocator: runtime.Allocator,
 ) -> Error {
-	source := "TORY" if tag.version == .V2_4 else "TDOR"
-	target := "TDOR" if tag.version == .V2_4 else "TORY"
+	source: Frame_Kind = .TORY if tag.version == .V2_4 else .TDOR
+	target: Frame_Kind = .TDOR if tag.version == .V2_4 else .TORY
 	at := -1
 	for i := 0; i < len(tag.frames); {
 		f := &tag.frames[i]
 		switch {
-		case f.id != source:
+		case !is_kind(f.id, {source}):
 			i += 1
 		case f.problem != .None && f.problem != .Bad_Data_Length:
 			drop(tag, i, drop_reason_of(f), dropped, allocator) or_return
@@ -403,7 +397,7 @@ convert_original_year :: proc(
 	carry_format(&frame, &tag.frames[at])
 	replace_frame(tag, at, {frame}) or_return
 	if partly || len(carried) < len(value) {
-		note(dropped, source, .Partly_Converted, allocator) or_return
+		note(dropped, id_in_tag(source, tag.version), .Partly_Converted, allocator) or_return
 	}
 	return nil
 }
@@ -416,7 +410,7 @@ convert_people :: proc(
 	dropped: ^Dropped_Frames,
 	allocator: runtime.Allocator,
 ) -> Error {
-	sources := []string{"IPLS"} if tag.version == .V2_4 else []string{"TIPL", "TMCL", "IPLS"}
+	sources := Frame_Kinds{.IPLS} if tag.version == .V2_4 else {.TIPL, .TMCL, .IPLS}
 	people := make([dynamic]string, tag.allocator)
 	defer {
 		for p in people {
@@ -428,7 +422,7 @@ convert_people :: proc(
 	previous: Maybe(Text_Format)
 	for i := 0; i < len(tag.frames); {
 		f := &tag.frames[i]
-		if !contains(sources, f.id) {
+		if !is_kind(f.id, sources) {
 			i += 1
 			continue
 		}
@@ -465,8 +459,9 @@ convert_people :: proc(
 		encode_string(&data, format.encoding, value, true, format.order) or_return
 	}
 	frame := make_frame(
-		"TIPL" if tag.version == .V2_4 else "IPLS",
+		Frame_Kind.TIPL if tag.version == .V2_4 else .IPLS,
 		data[:],
+		tag.version,
 		tag.allocator,
 	) or_return
 	frame.status = format.status
@@ -528,10 +523,10 @@ convert_from_v22 :: proc(
 		switch {
 		case id == "":
 			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
-		case f.id == "PIC" &&
+		case is_kind(f.id, {.APIC}) &&
 		     !(change_picture_layout(tag, i, .V2_2, .V2_3, dropped, allocator) or_return):
 			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
-		case f.id == "PIC":
+		case is_kind(f.id, {.APIC}):
 			i += 1
 		case:
 			rename_frame(f, id) or_return
@@ -599,14 +594,14 @@ convert_to_v22 :: proc(
 		switch {
 		case id == "":
 			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
-		case f.id == "APIC" &&
+		case is_kind(f.id, {.APIC}) &&
 		     !(change_picture_layout(tag, i, .V2_3, .V2_2, dropped, allocator) or_return):
 			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
-		case f.id == "APIC":
+		case is_kind(f.id, {.APIC}):
 			i += 1
 		case:
-			if f.id == "RVAD" && (stereo_volume_only(f) or_return) {
-				note(dropped, "RVAD", .Partly_Converted, allocator) or_return
+			if is_kind(f.id, {.RVAD}) && (stereo_volume_only(f) or_return) {
+				note(dropped, f.id, .Partly_Converted, allocator) or_return
 			}
 			rename_frame(f, id) or_return
 			// ID3v2.2 frames have no flags.
@@ -673,7 +668,7 @@ change_picture_layout :: proc(
 	picture.encoding = format.encoding
 	replacement, encode_err := encode_frame_in(
 		picture,
-		"PIC" if to == .V2_2 else "APIC",
+		id_in_tag(.APIC, to),
 		to,
 		format.order,
 		tag.allocator,
@@ -764,7 +759,7 @@ conversion_drop :: proc(f: ^Frame, from, to: V2_Version) -> (reason: Drop_Reason
 	}
 	// The frames inside a chapter are laid out in the source version: one that cannot be decoded
 	// cannot be converted.
-	if (f.id == "CHAP" || f.id == "CTOC") && f.problem != .None && f.problem != .Bad_Data_Length {
+	if is_kind(f.id, {.CHAP, .CTOC}) && f.problem != .None && f.problem != .Bad_Data_Length {
 		return .Encrypted if as_stored else .No_Equivalent, true
 	}
 	return {}, false
@@ -803,7 +798,6 @@ date_to_v24 :: proc(
 	dropped: ^Dropped_Frames,
 	allocator: runtime.Allocator,
 ) -> Error {
-	ids := [4]string{"TDRC", "TYER", "TDAT", "TIME"}
 	remove := make([dynamic]int, tag.allocator)
 	defer delete(remove)
 	year, day_month, hours: string
@@ -834,7 +828,7 @@ date_to_v24 :: proc(
 		}
 		append(&remove, first[k]) or_return
 		if !used[k] {
-			note(dropped, ids[k], .No_Equivalent, allocator) or_return
+			note(dropped, tag.frames[first[k]].id, .No_Equivalent, allocator) or_return
 		}
 	}
 	if !year_ok {
@@ -858,10 +852,10 @@ date_to_v24 :: proc(
 	value := strings.to_string(date) if full_year else year
 	for k in 1 ..= 3 {
 		if used[k] && (partly[k] || !same_group(&tag.frames[first[k]], &tag.frames[first[1]])) {
-			note(dropped, ids[k], .Partly_Converted, allocator) or_return
+			note(dropped, tag.frames[first[k]].id, .Partly_Converted, allocator) or_return
 		}
 	}
-	frame := text_frame(tag, "TDRC", {value}, format_of(&tag.frames[first[1]])) or_return
+	frame := text_frame(tag, .TDRC, {value}, format_of(&tag.frames[first[1]])) or_return
 	carry_format(&frame, &tag.frames[first[1]])
 	return replace_date_parts(tag, &remove, {frame})
 }
@@ -876,7 +870,6 @@ date_to_v23 :: proc(
 	if first[0] < 0 {
 		return nil
 	}
-	ids := [4]string{"TDRC", "TYER", "TDAT", "TIME"}
 	remove := make([dynamic]int, tag.allocator)
 	defer delete(remove)
 	append(&remove, first[0]) or_return
@@ -884,13 +877,13 @@ date_to_v23 :: proc(
 	for k in 1 ..= 3 {
 		if first[k] >= 0 {
 			append(&remove, first[k]) or_return
-			note(dropped, ids[k], .No_Equivalent, allocator) or_return
+			note(dropped, tag.frames[first[k]].id, .No_Equivalent, allocator) or_return
 		}
 	}
 	value, partly, ok := first_value(tag, &tag.frames[first[0]]) or_return
 	defer delete(value, tag.allocator)
 	if !ok || len(value) < 4 || !is_number(value[:4]) {
-		note(dropped, "TDRC", .No_Equivalent, allocator) or_return
+		note(dropped, tag.frames[first[0]].id, .No_Equivalent, allocator) or_return
 		return replace_date_parts(tag, &remove, nil)
 	}
 	digits :: proc(s: string, at: int) -> bool {
@@ -908,13 +901,13 @@ date_to_v23 :: proc(
 
 	previous := format_of(&tag.frames[first[0]])
 	texts := [3]struct {
-		id:    string,
+		kind:  Frame_Kind,
 		value: string,
 		keep:  bool,
 	} {
-		{"TYER", value[:4], true},
-		{"TDAT", string(day_month[:]), day},
-		{"TIME", string(hours[:]), minute},
+		{.TYER, value[:4], true},
+		{.TDAT, string(day_month[:]), day},
+		{.TIME, string(hours[:]), minute},
 	}
 	frames: [3]Frame
 	n := 0
@@ -922,7 +915,7 @@ date_to_v23 :: proc(
 		if !text.keep {
 			continue
 		}
-		frame, err := text_frame(tag, text.id, {text.value}, previous)
+		frame, err := text_frame(tag, text.kind, {text.value}, previous)
 		if err != nil {
 			for &f in frames[:n] {
 				destroy_frame(&f)
@@ -934,7 +927,8 @@ date_to_v23 :: proc(
 		n += 1
 	}
 	if partly || len(value) > carried {
-		if err := note(dropped, "TDRC", .Partly_Converted, allocator); err != nil {
+		if err := note(dropped, tag.frames[first[0]].id, .Partly_Converted, allocator);
+		   err != nil {
 			for &f in frames[:n] {
 				destroy_frame(&f)
 			}
@@ -985,7 +979,7 @@ convert_text :: proc(
 	switch &c in content {
 	case Text:
 		if len(c.values) > 1 {
-			join_values(&c.values, f.id == "TCON", tag.allocator) or_return
+			join_values(&c.values, is_kind(f.id, {.TCON}), tag.allocator) or_return
 			changed = true
 		}
 		format = keep_format(previous, tag.version, ..c.values)

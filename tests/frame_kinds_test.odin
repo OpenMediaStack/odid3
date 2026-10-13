@@ -131,8 +131,11 @@ the_frames_of_each_version :: proc(t: ^testing.T) {
 	for p in v22 {
 		in_v22[p.kind] = p.id
 	}
+	previous := ""
 	for kind in odid3.Frame_Kind {
 		name := fmt.tprint(kind)
+		testing.expectf(t, previous < name, "%s before %s", previous, name)
+		previous = name
 		v22_alone := kind == .CRM || kind == .LNK
 		want := [3]string {
 			in_v22[kind],

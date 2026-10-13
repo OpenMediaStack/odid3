@@ -172,33 +172,34 @@ decode_frame :: proc(
 	}
 	data := frame.data
 	id := frame.id
+	kind := kinds_of(id)
 	switch {
-	case id == "TXXX" || id == "TXX":
+	case .TXXX in kind:
 		content = decode_user_text(data, version, allocator) or_return
 	case len(id) > 0 && id[0] == 'T' || is_itunes_text_frame(id):
 		content = decode_text_frame(data, version, allocator) or_return
-	case id == "WXXX" || id == "WXX":
+	case .WXXX in kind:
 		content = decode_user_url(data, allocator) or_return
 	case len(id) > 0 && id[0] == 'W':
 		url := decode_latin1(first_string(.Latin1, data), allocator) or_return
 		content = Url{url}
-	case id == "COMM" || id == "COM" || id == "USLT" || id == "ULT":
+	case kind & {.COMM, .USLT} != {}:
 		content = decode_comment(data, allocator) or_return
-	case id == "APIC" || id == "PIC":
-		content = decode_picture(data, id == "PIC", allocator) or_return
-	case id == "UFID" || id == "UFI":
+	case .APIC in kind:
+		content = decode_picture(data, len(id) == 3, allocator) or_return
+	case .UFID in kind:
 		owner, identifier := decode_owned_bytes(data, allocator) or_return
 		content = Unique_File_Id{owner, identifier}
-	case id == "POPM" || id == "POP":
+	case .POPM in kind:
 		content = decode_popularimeter(data, allocator) or_return
-	case id == "PCNT" || id == "CNT":
+	case .PCNT in kind:
 		content = Play_Counter{big_endian_counter(data)}
-	case id == "PRIV":
+	case .PRIV in kind:
 		owner, private := decode_owned_bytes(data, allocator) or_return
 		content = Private{owner, private}
-	case id == "CHAP":
+	case .CHAP in kind:
 		content = decode_chapter(frame, version, allocator) or_return
-	case id == "CTOC":
+	case .CTOC in kind:
 		content = decode_table_of_contents(frame, version, allocator) or_return
 	case:
 		content = Binary{clone_bytes(data, allocator) or_return}
@@ -368,18 +369,19 @@ text_of :: proc(f: ^Frame) -> (text: []u8, only_first, known: bool) {
 	if len(f.data) == 0 {
 		return nil, false, false
 	}
-	switch f.id {
-	case "COMM", "COM", "USLT", "ULT":
+	kind := kinds_of(f.id)
+	switch {
+	case kind & {.COMM, .USLT} != {}:
 		return f.data[min(4, len(f.data)):], false, true
-	case "APIC":
+	case .APIC in kind && len(f.id) == 3:
+		return f.data[min(5, len(f.data)):], true, true
+	case .APIC in kind:
 		nul := bytes.index_byte(f.data[1:], 0)
 		if nul < 0 {
 			return nil, true, true
 		}
 		return f.data[min(nul + 3, len(f.data)):], true, true
-	case "PIC":
-		return f.data[min(5, len(f.data)):], true, true
-	case "WXXX", "WXX":
+	case .WXXX in kind:
 		return f.data[1:], true, true
 	}
 	if len(f.id) == 0 || f.id[0] != 'T' && !is_itunes_text_frame(f.id) {
@@ -402,11 +404,7 @@ byte_order_of :: proc(encoding: Encoding, first: []u8) -> Encoding {
 // iTunes writes these frames as text frames, with an encoding byte, under IDs outside the T family.
 @(private)
 is_itunes_text_frame :: proc(id: string) -> bool {
-	switch id {
-	case "WFED", "GRP1", "MVNM", "MVIN", "GP1", "MVN", "MVI":
-		return true
-	}
-	return false
+	return is_kind(id, {.WFED, .GRP1, .MVNM, .MVIN})
 }
 
 @(private)
@@ -1015,7 +1013,7 @@ reencode_frames :: proc(
 	for &f, i in frames {
 		replacement: Frame
 		frame_changed: bool
-		if f.id == "CHAP" || f.id == "CTOC" {
+		if is_kind(f.id, {.CHAP, .CTOC}) {
 			replacement, frame_changed = reencoded_chapter(&f, version, encoding, order) or_return
 		} else {
 			replacement, frame_changed, _ = reencoded(&f, version, encoding, order) or_return
@@ -1132,7 +1130,7 @@ reencoded :: proc(
 	switch &c in content {
 	case Text:
 		if len(c.values) > 1 && version != .V2_4 {
-			join_values(&c.values, f.id == "TCON" || f.id == "TCO", f.allocator) or_return
+			join_values(&c.values, is_kind(f.id, {.TCON}), f.allocator) or_return
 		}
 		c.encoding = encoding
 	case User_Text:
