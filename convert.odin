@@ -32,8 +32,8 @@ Drop_Reason :: enum u8 {
 	// Converted, but part of its value has no place in the target version: a date's seconds or a
 	// month without its day in ID3v2.3, values after the first, the group of a frame merged into
 	// a frame of another group; or re-encoded without what its text held that does not decode
-	// (bytes after a comment or the URL of a WXXX, a UTF-16 surrogate without its pair, which
-	// becomes U+FFFD).
+	// (bytes after a comment, lyrics or the URL of a WXXX, a UTF-16 surrogate without its pair,
+	// which becomes U+FFFD).
 	Partly_Converted,
 }
 

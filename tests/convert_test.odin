@@ -178,6 +178,16 @@ text_a_conversion_carries_in_part :: proc(t: ^testing.T) {
 			"\x01\xFF\xFEB\x00/\x00\xFD\xFF",
 		},
 	)
+
+	// Inside a chapter, and on the way to ID3v2.2, the same.
+	lone := frame(4, "TIT2", {0x02, 0xD8, 0x00, 0x00, 0x41})
+	chaptered := read(t, tag_file(4, 0, chapter_frame(4, "ch0", 0, 10, lone)))
+	defer odid3.destroy(&chaptered)
+	expect_dropped(t, convert(t, &chaptered.v2, .V2_3), {{"TIT2", .Partly_Converted}})
+	v22 := read(t, tag_file(4, 0, frame(4, "COMM", text("\x03engd\x00text\x00more"))))
+	defer odid3.destroy(&v22)
+	expect_dropped(t, convert(t, &v22.v2, .V2_2), {{"COMM", .Partly_Converted}})
+	expect_frames(t, &v22.v2, {"\x00engd\x00text"})
 }
 
 @(test)
@@ -516,6 +526,7 @@ a_failed_conversion_leaves_the_tag_as_it_was :: proc(t: ^testing.T) {
 		frame(4, "TDRC", text("\x032019-05-03T10:20:30")),
 		frame(4, "TIPL", text("\x03producer\x00Ada\x00engineer")),
 		frame(4, "TPE1", text("\x03Ada\x00Bea")),
+		frame(4, "COMM", text("\x03engd\x00text\x00more")),
 	)
 	succeeded := false
 	for budget in 0 ..< 128 {
@@ -527,7 +538,7 @@ a_failed_conversion_leaves_the_tag_as_it_was :: proc(t: ^testing.T) {
 		dropped, err := odid3.convert(&tags.v2, .V2_3, failing_allocator(&failing))
 		failing.left = 1 << 30
 		if err == nil {
-			testing.expect_value(t, len(dropped), 2)
+			testing.expect_value(t, len(dropped), 3)
 			odid3.destroy(&dropped, failing_allocator(&failing))
 			succeeded = true
 		} else {
