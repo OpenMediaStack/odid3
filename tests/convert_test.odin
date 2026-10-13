@@ -196,7 +196,8 @@ rebuilt_frames_carry_text_in_part :: proc(t: ^testing.T) {
 
 	// People, the original year, the year and picture descriptions are decoded and encoded again:
 	// a surrogate without its pair (00 D8 after a little endian byte order mark) becomes U+FFFD
-	// and the frame is listed, a real U+FFFD (FD FF) is carried as it is.
+	// and the frame is listed, once even when merged into a frame of another group; a real U+FFFD
+	// (FD FF) is carried as it is. Values after the first of a TDAT or TIME are listed too.
 	lone := []u8{0xFF, 0xFE, 0x00, 0xD8}
 	real := []u8{0xFF, 0xFE, 0xFD, 0xFF}
 	cases := []struct {
@@ -231,6 +232,22 @@ rebuilt_frames_carry_text_in_part :: proc(t: ^testing.T) {
 			"\x01\xFF\xFEa\x00\x00\x00\xFF\xFEb\x00\x00\x00\xFF\xFEp\x00\x00\x00\xFF\xFE\xFD\xFF\x00\x00",
 		},
 		{
+			4,
+			concat(
+				frame(4, "TIPL", text("\x00a\x00b\x00")),
+				frame(
+					4,
+					"TMCL",
+					concat({0x2A, 1, 0xFF, 0xFE, 'p', 0, 0, 0}, lone, {0, 0}),
+					0,
+					0x40,
+				),
+			),
+			.V2_3,
+			"TMCL",
+			"\x01\xFF\xFEa\x00\x00\x00\xFF\xFEb\x00\x00\x00\xFF\xFEp\x00\x00\x00\xFF\xFE\xFD\xFF\x00\x00",
+		},
+		{
 			3,
 			frame(3, "TORY", concat({1}, lone[:2], {'1', 0, '9', 0}, lone[2:], {'9', 0})),
 			.V2_4,
@@ -246,6 +263,31 @@ rebuilt_frames_carry_text_in_part :: proc(t: ^testing.T) {
 		},
 		{3, frame(3, "TYER", concat({1}, lone)), .V2_4, "TYER", "\x01\xFF\xFE\xFD\xFF"},
 		{3, frame(3, "TYER", concat({1}, real)), .V2_4, "", "\x01\xFF\xFE\xFD\xFF"},
+		{
+			3,
+			concat(
+				frame(3, "TYER", text("\x002001")),
+				frame(
+					3,
+					"TDAT",
+					concat({1, 0xFF, 0xFE, '0', 0, '1', 0, '0', 0, '2', 0, 0, 0}, lone),
+				),
+			),
+			.V2_4,
+			"TDAT",
+			"\x002001-02-01",
+		},
+		{
+			3,
+			concat(
+				frame(3, "TYER", text("\x002001")),
+				frame(3, "TDAT", text("\x000102")),
+				frame(3, "TIME", text("\x001200\x00junk")),
+			),
+			.V2_4,
+			"TIME",
+			"\x002001-02-01T12:00",
+		},
 		{
 			3,
 			frame(3, "APIC", concat(text("\x01image/jpeg\x00\x03"), lone, {0, 0, 0xFF, 0xD8})),
@@ -271,6 +313,13 @@ rebuilt_frames_carry_text_in_part :: proc(t: ^testing.T) {
 			2,
 			frame22("PIC", concat(text("\x01JPG\x03"), lone, {0, 0, 0xFF, 0xD8})),
 			.V2_3,
+			"PIC",
+			"\x01image/jpeg\x00\x03\xFF\xFE\xFD\xFF\x00\x00\xFF\xD8",
+		},
+		{
+			2,
+			frame22("PIC", concat(text("\x01JPG\x03"), lone, {0, 0, 0xFF, 0xD8})),
+			.V2_4,
 			"PIC",
 			"\x01image/jpeg\x00\x03\xFF\xFE\xFD\xFF\x00\x00\xFF\xD8",
 		},
@@ -321,6 +370,14 @@ rebuilt_frames_carry_text_in_part :: proc(t: ^testing.T) {
 		}
 		testing.expectf(t, succeeded, "%x never converted", c.frame)
 	}
+
+	// A picture ID3v2.2 has no image format for is dropped, and listed for that alone.
+	webp := read(
+		t,
+		tag_file(3, 0, frame(3, "APIC", concat(text("\x01image/webp\x00\x03"), lone, {0, 0}))),
+	)
+	defer odid3.destroy(&webp)
+	expect_dropped(t, convert(t, &webp.v2, .V2_2), {{"APIC", .No_Equivalent}})
 }
 
 @(test)

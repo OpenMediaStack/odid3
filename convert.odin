@@ -596,7 +596,7 @@ rename_frame :: proc(f: ^Frame, id: string) -> runtime.Allocator_Error {
 
 // APIC holds a MIME type where PIC holds a 3 character image format: the picture is decoded and
 // encoded again, and listed when its description does not decode whole. ok is false when it cannot
-// be decoded.
+// be decoded, or when ID3v2.2 has no image format for its MIME type.
 @(private)
 change_picture_layout :: proc(
 	tag: ^Tag,
@@ -964,17 +964,18 @@ date_to_v24 :: proc(
 	defer delete(year, tag.allocator)
 	defer delete(day_month, tag.allocator)
 	defer delete(hours, tag.allocator)
-	partly, year_ok, day_ok, time_ok: bool
+	partly: [4]bool
+	year_ok, day_ok, time_ok: bool
 	// A TDRC already there wins over the ID3v2.3 parts.
 	if first[0] < 0 {
 		if first[1] >= 0 {
-			year, partly, year_ok = first_value(tag, &tag.frames[first[1]]) or_return
+			year, partly[1], year_ok = first_value(tag, &tag.frames[first[1]]) or_return
 		}
 		if first[2] >= 0 {
-			day_month, _, day_ok = first_value(tag, &tag.frames[first[2]]) or_return
+			day_month, partly[2], day_ok = first_value(tag, &tag.frames[first[2]]) or_return
 		}
 		if first[3] >= 0 {
-			hours, _, time_ok = first_value(tag, &tag.frames[first[3]]) or_return
+			hours, partly[3], time_ok = first_value(tag, &tag.frames[first[3]]) or_return
 		}
 	}
 	full_year := year_ok && len(year) == 4 && is_number(year)
@@ -1009,11 +1010,8 @@ date_to_v24 :: proc(
 		}
 	}
 	value := strings.to_string(date) if full_year else year
-	if partly {
-		note(dropped, "TYER", .Partly_Converted, allocator) or_return
-	}
-	for k in 2 ..= 3 {
-		if used[k] && !same_group(&tag.frames[first[k]], &tag.frames[first[1]]) {
+	for k in 1 ..= 3 {
+		if used[k] && (partly[k] || !same_group(&tag.frames[first[k]], &tag.frames[first[1]])) {
 			note(dropped, ids[k], .Partly_Converted, allocator) or_return
 		}
 	}
