@@ -480,6 +480,54 @@ frames_with_problems_and_chapters :: proc(t: ^testing.T) {
 }
 
 @(test)
+undecodable_chapters_keep_their_bytes :: proc(t: ^testing.T) {
+	// A CHAP or CTOC whose content does not decode holds no text odid3 can find: set_encoding and
+	// the write options leave it as it is, and change the frames beside it.
+	for major in ([]u8{3, 4}) {
+		title := frame(major, "TIT2", concat({1}, utf16("T", .Little_Endian)))
+		for chapter in undecodable_chapters(major) {
+			tags := read(t, tag_file(major, 0, chapter, title))
+			defer odid3.destroy(&tags)
+			encoded, encoding_err := odid3.render(
+				&tags.v2,
+				{encoding = .Latin1},
+				context.temp_allocator,
+			)
+			testing.expect_value(t, encoding_err, nil)
+			ordered, order_err := odid3.render(
+				&tags.v2,
+				{utf16_byte_order = .Big_Endian},
+				context.temp_allocator,
+			)
+			testing.expect_value(t, order_err, nil)
+			testing.expect_value(t, odid3.set_encoding(&tags.v2, odid3.Encoding.Latin1), nil)
+			latin1 := read(t, encoded)
+			defer odid3.destroy(&latin1)
+			big := read(t, ordered)
+			defer odid3.destroy(&big)
+			results := []struct {
+				tag:   ^odid3.Tag,
+				title: string,
+			}{{&tags.v2, "\x00T"}, {&latin1.v2, "\x00T"}, {&big.v2, "\x01\xFE\xFF\x00T"}}
+			for r in results {
+				frames := r.tag.frames[:]
+				testing.expectf(
+					t,
+					len(frames) == 2 &&
+					frames[0].id == string(chapter[:4]) &&
+					bytes.equal(frames[0].data, chapter[10:]) &&
+					string(frames[1].data) == r.title,
+					"%q in ID3v2.%d: %d frames",
+					string(chapter),
+					major,
+					len(frames),
+				)
+			}
+		}
+	}
+}
+
+@(test)
 set_encoding_allocation_failures :: proc(t: ^testing.T) {
 	for name in ([]string{"v23_cover.mp3", "v24_unicode.mp3", "v24_chapters.mp3"}) {
 		succeeded := false

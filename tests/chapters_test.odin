@@ -36,6 +36,18 @@ compressed_frame :: proc(id: string, data: []u8) -> []u8 {
 	return frame(4, id, concat(length, zlib_stored(data)), 0, 0x09)
 }
 
+// CHAP and CTOC frames whose content does not decode: an element ID without its NUL, 15 bytes of
+// times instead of 16, flags without the number of children, a child ID without its NUL.
+undecodable_chapters :: proc(major: u8) -> [5][]u8 {
+	return {
+		frame(major, "CHAP", text("ch0")),
+		frame(major, "CHAP", concat(text("ch0\x00"), zeros(15))),
+		frame(major, "CTOC", text("toc")),
+		frame(major, "CTOC", text("toc\x00\x03")),
+		frame(major, "CTOC", text("toc\x00\x03\x02ch0\x00")),
+	}
+}
+
 @(test)
 chapters_written_by_ffmpeg :: proc(t: ^testing.T) {
 	for name in ([]string{"v23_chapters.mp3", "v24_chapters.mp3"}) {

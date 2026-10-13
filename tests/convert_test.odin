@@ -889,6 +889,44 @@ chapters_keep_what_top_level_keeps :: proc(t: ^testing.T) {
 }
 
 @(test)
+undecodable_chapters_stay_as_they_are :: proc(t: ^testing.T) {
+	// A CHAP or CTOC whose content does not decode ends before any frame, so nothing in it is laid
+	// out in the source version: a conversion keeps it as it is, without listing it, and converts
+	// the frames beside it.
+	for major in ([]u8{3, 4}) {
+		to: odid3.V2_Version = .V2_4 if major == 3 else .V2_3
+		date := frame(major, "TYER" if major == 3 else "TDRC", text("\x002019"))
+		for chapter in undecodable_chapters(major) {
+			tags := read(t, tag_file(major, 0, chapter, date))
+			defer odid3.destroy(&tags)
+			_, decode_err := odid3.decode_frame(
+				&tags.v2.frames[0],
+				tags.v2.version,
+				context.temp_allocator,
+			)
+			testing.expect_value(t, decode_err, odid3.Error(odid3.Format_Error.Bad_Content))
+			expect_dropped(t, convert(t, &tags.v2, to), {})
+			rendered, err := odid3.render(&tags.v2, {}, context.temp_allocator)
+			testing.expect_value(t, err, nil)
+			again := read(t, rendered)
+			defer odid3.destroy(&again)
+			frames := again.v2.frames[:]
+			testing.expectf(
+				t,
+				len(frames) == 2 &&
+				frames[0].id == string(chapter[:4]) &&
+				slice.equal(frames[0].data, chapter[10:]) &&
+				frames[1].id == ("TDRC" if to == .V2_4 else "TYER"),
+				"%q to %v: %d frames",
+				string(chapter),
+				to,
+				len(frames),
+			)
+		}
+	}
+}
+
+@(test)
 compressed_and_encrypted_frames_keep_their_size :: proc(t: ^testing.T) {
 	stored := frame(3, "PRIV", concat({0, 0, 0, 20, 0x80}, text("secret")), 0, 0xC0)
 	tags := read(t, tag_file(3, 0, stored))

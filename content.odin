@@ -975,7 +975,8 @@ set_frame_encoding :: proc(
 }
 
 // See set_encoding. Every frame changes, or none; the frames set_frame_encoding refuses as
-// .Not_Decodable, empty ones and those with an unknown encoding byte are left as they are.
+// .Not_Decodable, empty ones, those with an unknown encoding byte and a CHAP or CTOC whose content
+// does not decode are left as they are.
 set_tag_encoding :: proc(
 	tag: ^Tag,
 	encoding: Encoding,
@@ -1050,7 +1051,8 @@ reencode_frames :: proc(
 	return
 }
 
-// A chapter whose frames inside change encoding, encoded again.
+// A chapter whose frames inside change encoding, encoded again. One whose content does not decode
+// holds no frame odid3 can find, and stays as it is.
 @(private)
 reencoded_chapter :: proc(
 	f: ^Frame,
@@ -1065,7 +1067,7 @@ reencoded_chapter :: proc(
 	if is_stored(f) || f.problem == .Nested_Chapter {
 		return {}, false, nil
 	}
-	content := decode_frame(f, version, f.allocator) or_return
+	content := decode_owned(f, version, f.allocator) or_return
 	defer destroy_content(&content, f.allocator)
 	frames: ^[dynamic]Frame
 	#partial switch &c in content {
