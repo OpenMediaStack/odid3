@@ -943,9 +943,10 @@ v22_image_format :: proc(mime: string) -> string {
 // lacks .Encoding_Not_In_Version. A frame already in the encoding is left as it is. Text that would
 // not survive (bytes other than NULs after the text of a comment or the URL of a WXXX, a UTF-16
 // surrogate without its pair, an odd last byte of UTF-16 text other than a NUL) gives .Bad_Content
-// rather than being changed; before ID3v2.4, several values are joined with "/". UTF-16 with a byte order mark is written in byte_order, and a frame already in
-// the encoding but in the other order is re-encoded; nil keeps the order of a frame already in
-// UTF-16 and writes the others little endian.
+// rather than being changed; before ID3v2.4, several values are joined with "/". UTF-16 with a
+// byte order mark is written in byte_order, and a frame already in the encoding but in the other
+// order is re-encoded; nil keeps the order of a frame already in UTF-16 and writes the others
+// little endian.
 set_encoding :: proc {
 	set_frame_encoding,
 	set_tag_encoding,
@@ -953,7 +954,8 @@ set_encoding :: proc {
 
 // See set_encoding; version is the version of the frame's tag. A frame whose data is not its
 // content gives .Not_Decodable, as does one whose layout odid3 does not decode (SYLT, GEOB, USER,
-// OWNE, COMR, IPLS). The new data is allocated with the frame's allocator.
+// OWNE, COMR, IPLS); a COMM, USLT or APIC whose data does not follow its layout gives
+// .Bad_Content. The new data is allocated with the frame's allocator.
 set_frame_encoding :: proc(
 	frame: ^Frame,
 	version: V2_Version,
@@ -963,9 +965,9 @@ set_frame_encoding :: proc(
 	if !encoding_holds(encoding, version) {
 		return .Encoding_Not_In_Version
 	}
-	replacement, changed, undecoded := reencoded(frame, version, encoding, byte_order) or_return
-	if undecoded {
-		return .Not_Decodable
+	replacement, changed, refused := reencoded(frame, version, encoding, byte_order) or_return
+	if refused != .None {
+		return refused
 	}
 	if changed {
 		destroy_frame(frame)
@@ -975,8 +977,9 @@ set_frame_encoding :: proc(
 }
 
 // See set_encoding. Every frame changes, or none; the frames set_frame_encoding refuses as
-// .Not_Decodable, empty ones, those with an unknown encoding byte and a CHAP or CTOC whose content
-// does not decode are left as they are.
+// .Not_Decodable, a COMM, USLT or APIC whose data does not follow its layout, empty ones, those
+// with an unknown encoding byte and a CHAP or CTOC whose content does not decode are left as they
+// are.
 set_tag_encoding :: proc(
 	tag: ^Tag,
 	encoding: Encoding,
@@ -1114,8 +1117,9 @@ keep_identity :: proc(replacement, f: ^Frame) {
 
 // The frame with its text in another encoding (nil keeps its own), UTF-16 with a byte order mark
 // in order. changed is false for a frame without text, an empty one, one with an unknown encoding
-// byte, one whose data is not its content, and one already in the encoding and order; undecoded
-// tells set_frame_encoding about a frame with text odid3 does not decode.
+// byte, one whose data is not its content or does not follow its layout, and one already in the
+// encoding and order; refused is what set_frame_encoding gives for a frame odid3 does not decode,
+// which set_tag_encoding leaves as it is.
 @(private)
 reencoded :: proc(
 	f: ^Frame,
@@ -1124,14 +1128,15 @@ reencoded :: proc(
 	order: Maybe(Byte_Order),
 ) -> (
 	replacement: Frame,
-	changed, undecoded: bool,
+	changed: bool,
+	refused: Format_Error,
 	err: Error,
 ) {
 	if !has_encoding_byte(f.id) || len(f.data) == 0 {
 		return
 	}
 	if is_stored(f) || f.problem == .Skipped_Picture {
-		return {}, false, true, nil
+		return {}, false, .Not_Decodable, nil
 	}
 	encoding := asked.? or_else Encoding(f.data[0])
 	if f.data[0] == u8(encoding) {
@@ -1148,10 +1153,16 @@ reencoded :: proc(
 		return
 	}
 	// Read as ID3v2.4 reads it, so that values after the first are not lost before ID3v2.4.
-	content := decode_frame(f, .V2_4, f.allocator) or_return
+	content, decode_err := decode_frame(f, .V2_4, f.allocator)
 	defer destroy_content(&content, f.allocator)
+	if format_err, is_format := decode_err.(Format_Error); is_format {
+		return {}, false, format_err, nil
+	}
+	if decode_err != nil {
+		return {}, false, .None, decode_err
+	}
 	if !text_survives(f, &content) {
-		return {}, false, false, .Bad_Content
+		return {}, false, .None, .Bad_Content
 	}
 	switch &c in content {
 	case Text:
@@ -1173,7 +1184,7 @@ reencoded :: proc(
 	case Url, Unique_File_Id, Popularimeter, Play_Counter, Private, Chapter, Table_Of_Contents:
 		return
 	case Binary:
-		return {}, false, true, nil
+		return {}, false, .Not_Decodable, nil
 	}
 	replacement = encode_frame_in(
 		content,
@@ -1184,10 +1195,10 @@ reencoded :: proc(
 	) or_return
 	if f.data[0] == u8(encoding) && bytes.equal(replacement.data, f.data) {
 		destroy_frame(&replacement)
-		return {}, false, false, nil
+		return {}, false, .None, nil
 	}
 	keep_identity(&replacement, f)
-	return replacement, true, false, nil
+	return replacement, true, .None, nil
 }
 
 // Whether a frame's text decoded whole: nothing but NULs (a final terminator, sometimes doubled)
