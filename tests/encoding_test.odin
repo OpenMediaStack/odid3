@@ -1,5 +1,6 @@
 package odid3_tests
 
+import "core:mem"
 import "core:testing"
 
 import odid3 "../"
@@ -292,4 +293,110 @@ encoding_as_a_write_option :: proc(t: ^testing.T) {
 	defer odid3.destroy(&tags)
 	_, err := odid3.render(&tags.v2, {encoding = .UTF8}, context.temp_allocator)
 	testing.expect_value(t, err, odid3.Error(odid3.Format_Error.Encoding_Not_In_Version))
+}
+
+@(test)
+encoding_option_with_other_options :: proc(t: ^testing.T) {
+	// Extra terminators give empty values, which are not joined.
+	tags := read(
+		t,
+		tag_file(
+			3,
+			0,
+			frame(3, "TIT2", text("\x00Title\x00\x00")),
+			frame(3, "TALB", text("\x00Album\x00\x00\x00")),
+		),
+	)
+	defer odid3.destroy(&tags)
+	options := odid3.Write_Options {
+		encoding          = .UTF16,
+		unsynchronisation = true,
+		compression       = true,
+		padding           = 0,
+	}
+	rendered, err := odid3.render(&tags.v2, options, context.temp_allocator)
+	testing.expect_value(t, err, nil)
+	testing.expect_value(t, rendered[5], 0x80)
+	again := read(t, concat(rendered, fixture(t, "no_tag.mp3")))
+	defer odid3.destroy(&again)
+	testing.expect_value(t, tag_field(&again.v2, .Title), "Title")
+	testing.expect_value(t, tag_field(&again.v2, .Album), "Album")
+	for f in again.v2.frames {
+		testing.expectf(t, .Compression in f.format, "%s: %v", f.id, f.format)
+	}
+
+	_, err = odid3.render(&tags.v2, {encoding = .UTF16, footer = true}, context.temp_allocator)
+	testing.expect_value(t, err, odid3.Error(odid3.Format_Error.Not_In_Version))
+
+	v22 := read(t, fixture(t, "v22.mp3"))
+	defer odid3.destroy(&v22)
+	_, err = odid3.render(&v22.v2, {encoding = .UTF8}, context.temp_allocator)
+	testing.expect_value(t, err, odid3.Error(odid3.Format_Error.Encoding_Not_In_Version))
+	rendered, err = odid3.render(&v22.v2, {encoding = .UTF16}, context.temp_allocator)
+	testing.expect_value(t, err, nil)
+	again22 := read(t, concat(rendered, fixture(t, "no_tag.mp3")))
+	defer odid3.destroy(&again22)
+	testing.expect_value(t, all_fields(&again22.v2), all_fields(&v22.v2))
+}
+
+@(test)
+encoding_option_reaches_every_text :: proc(t: ^testing.T) {
+	for name in ([]string{"v23_full.mp3", "v24_chapters.mp3"}) {
+		tags := read(t, fixture(t, name))
+		defer odid3.destroy(&tags)
+		rendered, err := odid3.render(&tags.v2, {encoding = .UTF16}, context.temp_allocator)
+		testing.expect_value(t, err, nil)
+		again := read(t, concat(rendered, fixture(t, "no_tag.mp3")))
+		defer odid3.destroy(&again)
+		check :: proc(t: ^testing.T, frames: []odid3.Frame, version: odid3.V2_Version) {
+			for &f in frames {
+				content, err := odid3.decode_frame(&f, version, context.temp_allocator)
+				testing.expectf(t, err == nil, "%s: %v", f.id, err)
+				encoding := odid3.Encoding.UTF16
+				#partial switch c in content {
+				case odid3.Text:
+					encoding = c.encoding
+				case odid3.User_Text:
+					encoding = c.encoding
+				case odid3.Comment:
+					encoding = c.encoding
+				case odid3.Picture:
+					encoding = c.encoding
+				case odid3.Chapter:
+					check(t, c.frames[:], version)
+				case odid3.Table_Of_Contents:
+					check(t, c.frames[:], version)
+				}
+				testing.expectf(t, encoding == .UTF16, "%s in %v", f.id, encoding)
+			}
+		}
+		check(t, again.v2.frames[:], again.v2.version)
+	}
+}
+
+@(test)
+encoding_option_allocation_failures :: proc(t: ^testing.T) {
+	for name in ([]string{"v23_full.mp3", "v24_chapters.mp3"}) {
+		tags := read(t, fixture(t, name))
+		defer odid3.destroy(&tags)
+		rendered := false
+		for budget in 0 ..< 256 {
+			failing := Failing{context.allocator, budget}
+			allocator := failing_allocator(&failing)
+			bytes, err := odid3.render(&tags.v2, {encoding = .UTF16}, allocator)
+			if err == nil {
+				delete(bytes, allocator)
+				rendered = true
+				break
+			}
+			testing.expectf(
+				t,
+				err == odid3.Error(mem.Allocator_Error.Out_Of_Memory),
+				"%s: %v",
+				name,
+				err,
+			)
+		}
+		testing.expectf(t, rendered, "%s never rendered", name)
+	}
 }
