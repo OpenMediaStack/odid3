@@ -90,9 +90,10 @@ clone_frame :: proc(f: ^Frame, allocator: runtime.Allocator) -> (duplicate: Fram
 // Converts a tag to another version: renames and merges frames (TYER, TDAT and TIME into TDRC,
 // TORY into TDOR, IPLS into TIPL, and back; ID3v2.2's 3 letter IDs to 4 letters and back, PIC
 // into APIC), converts the frames inside chapters, re-encodes text the target cannot hold, joins
-// several values with "/" before ID3v2.4, and removes the frames it cannot carry; ID3v2.2 frames
-// have no flags, so encrypted and grouped frames are removed first and the others lose theirs. It
-// returns, in the order it met them, the frames it removed and those whose value it could only
+// several values with "/" before ID3v2.4, and removes the frames it cannot carry, the known frames
+// the target does not have among them. Going to ID3v2.2, which has neither frame flags nor
+// chapters, the encrypted and grouped frames and those it has no ID for are removed first, and the
+// others lose their flags. It returns, in the order it met them, the frames it removed and those whose value it could only
 // carry in part, each with the reason. From .None it only sets the version; to .None it removes
 // every frame. Tags whose frames were not all read (a compressed ID3v2.2 tag, pictures skipped
 // when they need a new layout) give .Incomplete_Tag. On an error the tag is left as it was. Free
@@ -573,6 +574,7 @@ drop_what_v22_cannot_hold :: proc(
 ) -> Error {
 	for i := 0; i < len(tag.frames); {
 		f := &tag.frames[i]
+		kind, known := frame_kind(f.id, tag.version)
 		switch {
 		case f.problem == .Too_Short:
 			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
@@ -580,7 +582,9 @@ drop_what_v22_cannot_hold :: proc(
 			drop(tag, i, .Encrypted, dropped, allocator) or_return
 		case .Grouping in f.format:
 			drop(tag, i, .Grouped, dropped, allocator) or_return
-		case !has_place_in_v22(f, tag.version):
+		case !known && .Discard_On_Tag_Alter in f.status:
+			drop(tag, i, .Discard_On_Tag_Alter, dropped, allocator) or_return
+		case !known || !kept_in(kind, .V2_2):
 			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
 		case:
 			i += 1
@@ -589,15 +593,9 @@ drop_what_v22_cannot_hold :: proc(
 	return nil
 }
 
-@(private = "file")
-has_place_in_v22 :: proc(f: ^Frame, version: V2_Version) -> bool {
-	kind, known := frame_kind(f.id, version)
-	return known && kept_in(kind, .V2_2)
-}
-
-// Renames ID3v2.3 frames to their ID3v2.2 IDs, turns APIC into PIC, and drops the frames without
-// an ID3v2.2 ID, which drop_what_v22_cannot_hold has dropped already but for the frames inside
-// chapters.
+// Renames ID3v2.3 frames to their ID3v2.2 IDs and turns APIC into PIC, dropping a picture whose
+// MIME type ID3v2.2 has no name for. drop_what_v22_cannot_hold and the ID3v2.3 step leave no other
+// frame without an ID3v2.2 ID.
 @(private)
 convert_to_v22 :: proc(
 	tag: ^Tag,
@@ -608,8 +606,6 @@ convert_to_v22 :: proc(
 		f := &tag.frames[i]
 		id := v23_to_v22(f.id)
 		switch {
-		case id == "":
-			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
 		case is_kind(f.id, {.APIC}) &&
 		     !(change_picture_layout(tag, i, .V2_3, .V2_2, dropped, allocator) or_return):
 			drop(tag, i, .No_Equivalent, dropped, allocator) or_return

@@ -1,6 +1,7 @@
 package odid3_tests
 
 import "core:mem"
+import "core:slice"
 import "core:testing"
 
 import odid3 "../"
@@ -1031,6 +1032,7 @@ frames_the_target_has_no_place_for :: proc(t: ^testing.T) {
 	// are converted. Unknown frames stay between ID3v2.3 and 2.4.
 	lone := frame(4, "TIT2", {0x02, 0xD8, 0x00})
 	cases := []struct {
+		name:    string,
 		major:   u8,
 		frames:  []u8,
 		to:      odid3.V2_Version,
@@ -1038,6 +1040,7 @@ frames_the_target_has_no_place_for :: proc(t: ^testing.T) {
 		ids:     []string,
 	} {
 		{
+			"removed by ID3v2.4",
 			3,
 			concat(
 				frame(3, "TRDA", text("\x00June")),
@@ -1049,6 +1052,7 @@ frames_the_target_has_no_place_for :: proc(t: ^testing.T) {
 			{"TIT2"},
 		},
 		{
+			"added by ID3v2.4",
 			4,
 			concat(
 				frame(4, "TDEN", text("\x032019")),
@@ -1071,6 +1075,7 @@ frames_the_target_has_no_place_for :: proc(t: ^testing.T) {
 			{"TSOP"},
 		},
 		{
+			"chapters to ID3v2.2",
 			4,
 			concat(
 				chapter_frame(4, "ch0", 0, 10, lone),
@@ -1080,31 +1085,71 @@ frames_the_target_has_no_place_for :: proc(t: ^testing.T) {
 			{{"CHAP", .No_Equivalent}, {"CTOC", .No_Equivalent}},
 			{},
 		},
-		{4, frame(4, "XYZW", text("data")), .V2_3, {}, {"XYZW"}},
-		{4, frame(4, "XYZW", text("data")), .V2_2, {{"XYZW", .No_Equivalent}}, {}},
+		{"unknown to ID3v2.3", 4, frame(4, "XYZW", text("data")), .V2_3, {}, {"XYZW"}},
 		{
+			"unknown to ID3v2.2",
+			4,
+			concat(frame(4, "XYZW", text("data")), frame(4, "XYZV", text("data"), 0x40)),
+			.V2_2,
+			{{"XYZW", .No_Equivalent}, {"XYZV", .Discard_On_Tag_Alter}},
+			{},
+		},
+		{
+			"from ID3v2.2 to ID3v2.4",
 			2,
 			concat(frame22("TRD", text("\x00June")), frame22("TT2", text("\x00T"))),
 			.V2_4,
 			{{"TRD", .No_Equivalent}},
 			{"TIT2"},
 		},
-		{
-			3,
-			chapter_frame(3, "ch0", 0, 10, frame(3, "TRDA", text("\x00June"))),
-			.V2_4,
-			{{"TRDA", .No_Equivalent}},
-			{"CHAP"},
-		},
 	}
 	for c in cases {
 		tags := read(t, tag_file(c.major, 0, c.frames))
 		defer odid3.destroy(&tags)
-		expect_dropped(t, convert(t, &tags.v2, c.to), c.dropped)
-		testing.expect_value(t, len(tags.v2.frames), len(c.ids))
-		for f, i in tags.v2.frames[:min(len(tags.v2.frames), len(c.ids))] {
-			testing.expect_value(t, f.id, c.ids[i])
+		dropped := convert(t, &tags.v2, c.to)
+		listed := len(dropped) == len(c.dropped)
+		for d, i in dropped {
+			listed = listed && i < len(c.dropped) && d == c.dropped[i]
 		}
+		testing.expectf(t, listed, "%s: dropped %v, want %v", c.name, dropped, c.dropped)
+		ids := make([dynamic]string, context.temp_allocator)
+		for f in tags.v2.frames {
+			append(&ids, f.id)
+		}
+		testing.expectf(
+			t,
+			slice.equal(ids[:], c.ids),
+			"%s: frames %v, want %v",
+			c.name,
+			ids,
+			c.ids,
+		)
+	}
+
+	// Inside a chapter, the same.
+	chaptered := read(
+		t,
+		tag_file(
+			3,
+			0,
+			chapter_frame(
+				3,
+				"ch0",
+				0,
+				10,
+				frame(3, "TRDA", text("\x00June")),
+				frame(3, "TIT2", text("\x00T")),
+			),
+		),
+	)
+	defer odid3.destroy(&chaptered)
+	expect_dropped(t, convert(t, &chaptered.v2, .V2_4), {{"TRDA", .No_Equivalent}})
+	content, err := odid3.decode_frame(&chaptered.v2.frames[0], .V2_4)
+	defer odid3.destroy(&content)
+	chapter, is_chapter := content.(odid3.Chapter)
+	testing.expect(t, err == nil && is_chapter && len(chapter.frames) == 1)
+	if is_chapter && len(chapter.frames) == 1 {
+		testing.expect_value(t, chapter.frames[0].id, "TIT2")
 	}
 }
 
