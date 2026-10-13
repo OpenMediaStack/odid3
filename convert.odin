@@ -656,8 +656,8 @@ rename_frame :: proc(f: ^Frame, id: string) -> runtime.Allocator_Error {
 // APIC holds a MIME type where PIC holds a 3 character image format: the picture is decoded and
 // encoded again, in its encoding and byte order when the target version has that encoding, and
 // listed when its description does not decode whole or its image format holds a NUL, which ends a
-// MIME type: the MIME type keeps what comes before it. ok is false when it cannot be decoded, or
-// when ID3v2.2 has no image format for its MIME type.
+// MIME type, so the MIME type keeps only what comes before it. ok is false when it cannot be
+// decoded, or when ID3v2.2 has no image format for its MIME type.
 @(private)
 change_picture_layout :: proc(
 	tag: ^Tag,

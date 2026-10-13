@@ -469,6 +469,14 @@ rebuilt_frames_carry_text_in_part :: proc(t: ^testing.T) {
 			"",
 			"\x01image/jpeg\x00\x03\xFF\xFE\xFD\xFF\x00\x00\xFF\xD8",
 		},
+		// An image format holding a NUL, which ends the APIC's MIME type there.
+		{
+			2,
+			frame22("PIC", text("\x01J\x00G\x03\xFF\xFEd\x00\x00\x00\xFF\xD8")),
+			.V2_3,
+			"PIC",
+			"\x01J\x00\x03\xFF\xFEd\x00\x00\x00\xFF\xD8",
+		},
 	}
 	for c in cases {
 		tags := read(t, tag_file(c.major, 0, c.frame))
