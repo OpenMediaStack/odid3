@@ -89,8 +89,9 @@ clone_frame :: proc(f: ^Frame, allocator: runtime.Allocator) -> (duplicate: Fram
 
 // Converts a tag to another version: renames and merges frames (TYER, TDAT and TIME into TDRC,
 // TORY into TDOR, IPLS into TIPL, and back; ID3v2.2's 3 letter IDs to 4 letters and back, PIC
-// into APIC), converts the frames inside chapters, re-encodes text the target cannot hold, joins
-// several values with "/" before ID3v2.4, and removes the frames it cannot carry, the known frames
+// into APIC), converts the frames inside chapters (one whose content does not decode, which holds
+// none odid3 can find, stays as it is), re-encodes text the target cannot hold, joins several
+// values with "/" before ID3v2.4, and removes the frames it cannot carry, the known frames
 // the target does not have among them. Going to ID3v2.2, which has neither frame flags nor
 // chapters, the encrypted and grouped frames and those it has no ID for are removed first, and the
 // others lose their flags. It returns, in the order it met them, the frames it removed and those
@@ -230,7 +231,8 @@ same_group :: proc(a, b: ^Frame) -> bool {
 }
 
 // The frames inside a CHAP or CTOC are laid out in their tag's version: they are converted with
-// it, and the chapter encoded again.
+// it, and the chapter encoded again. A chapter whose header does not decode holds no frame odid3
+// can find, so it stays as it is.
 @(private)
 convert_chapter :: proc(
 	tag: ^Tag,
@@ -258,6 +260,8 @@ convert_chapter :: proc(
 	case Text, User_Text, Url, User_Url, Comment, Picture, Unique_File_Id, Popularimeter:
 		return nil
 	case Play_Counter, Private, Binary:
+		return nil
+	case nil:
 		return nil
 	}
 	replacement := encode_decoded_chapter(content, f.id, to, tag.allocator) or_return
