@@ -97,6 +97,90 @@ text_is_reencoded_for_v23 :: proc(t: ^testing.T) {
 }
 
 @(test)
+text_a_conversion_carries_in_part :: proc(t: ^testing.T) {
+	expect_frames :: proc(
+		t: ^testing.T,
+		tag: ^odid3.Tag,
+		want: []string,
+		loc := #caller_location,
+	) {
+		testing.expect_value(t, len(tag.frames), len(want), loc = loc)
+		for f, i in tag.frames[:min(len(tag.frames), len(want))] {
+			testing.expectf(t, string(f.data) == want[i], "%s: %x", f.id, f.data, loc = loc)
+		}
+	}
+
+	// Re-encoded for ID3v2.3, bytes after a URL or a comment and a surrogate without its pair
+	// (D8 00 in UTF-16BE, 00 D8 after a little endian byte order mark) cannot be carried: the
+	// frames are kept without them, the surrogate as U+FFFD, and listed.
+	partly := read(
+		t,
+		tag_file(
+			4,
+			0,
+			frame(4, "WXXX", text("\x03site\x00http://x\x00junk")),
+			frame(4, "COMM", text("\x03engd\x00text\x00more")),
+			frame(4, "TIT2", {0x02, 0xD8, 0x00, 0x00, 0x41}),
+			frame(
+				4,
+				"TPE1",
+				concat({1}, utf16("B", .Little_Endian), {0, 0, 0xFF, 0xFE, 0x00, 0xD8}),
+			),
+		),
+	)
+	defer odid3.destroy(&partly)
+	expect_dropped(
+		t,
+		convert(t, &partly.v2, .V2_3),
+		{
+			{"WXXX", .Partly_Converted},
+			{"COMM", .Partly_Converted},
+			{"TIT2", .Partly_Converted},
+			{"TPE1", .Partly_Converted},
+		},
+	)
+	expect_frames(
+		t,
+		&partly.v2,
+		{
+			"\x00site\x00http://x",
+			"\x00engd\x00text",
+			"\x01\xFF\xFE\xFD\xFF\x41\x00",
+			"\x01\xFF\xFEB\x00/\x00\xFD\xFF",
+		},
+	)
+
+	// A real U+FFFD is a character like any other, and a final terminator is no lost byte.
+	whole := read(
+		t,
+		tag_file(
+			4,
+			0,
+			frame(4, "WXXX", text("\x03\uFFFD\x00http://x\x00")),
+			frame(4, "COMM", text("\x03engd\x00\uFFFD\x00")),
+			frame(4, "TIT2", {0x02, 0xFF, 0xFD, 0x00, 0x41}),
+			frame(
+				4,
+				"TPE1",
+				concat({1}, utf16("B", .Little_Endian), {0, 0}, utf16("\uFFFD", .Little_Endian)),
+			),
+		),
+	)
+	defer odid3.destroy(&whole)
+	expect_dropped(t, convert(t, &whole.v2, .V2_3), {})
+	expect_frames(
+		t,
+		&whole.v2,
+		{
+			"\x01\xFF\xFE\xFD\xFF\x00\x00http://x",
+			"\x01eng\xFF\xFEd\x00\x00\x00\xFF\xFE\xFD\xFF",
+			"\x01\xFF\xFE\xFD\xFF\x41\x00",
+			"\x01\xFF\xFEB\x00/\x00\xFD\xFF",
+		},
+	)
+}
+
+@(test)
 frames_a_conversion_drops :: proc(t: ^testing.T) {
 	v24 := read(
 		t,
