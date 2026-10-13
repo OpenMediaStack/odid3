@@ -219,6 +219,74 @@ bytes_after_a_url_are_not_lost :: proc(t: ^testing.T) {
 }
 
 @(test)
+odd_utf16_bytes_and_nuls_after_the_text :: proc(t: ^testing.T) {
+	// Decoding drops the odd last byte of a UTF-16 string, so it is lost unless it is a NUL, which
+	// some writers end UTF-16 text with in place of two.
+	bad := odid3.Error(odid3.Format_Error.Bad_Content)
+	odd_bytes := [?][]u8 {
+		frame(4, "TIT2", {0x02, 0x00, 'A', 'B'}),
+		frame(4, "TPE1", text("\x01\xFF\xFEA\x00B")),
+		frame(4, "TXXX", concat({1}, utf16("d", .Little_Endian), {0, 0}, text("A\x00B"))),
+		frame(4, "COMM", concat({2}, text("eng"), {0x00, 'd', 0, 0, 0x00, 'A', 'B'})),
+		frame(4, "TPE2", text("\x01\xFF\xFEA\x00\x00\x00B")),
+		frame(4, "COMM", concat({1}, text("eng"), utf16("d", .Little_Endian), {'B'})),
+		// Text after NULs is no terminator.
+		frame(4, "COMM", text("\x03engd\x00text\x00\x00X")),
+		frame(4, "WXXX", text("\x03d\x00http://x\x00\x00X")),
+	}
+	for odd in odd_bytes {
+		refused := read(t, tag_file(4, 0, odd))
+		defer odid3.destroy(&refused)
+		before := frames_snapshot(&refused.v2)
+		testing.expect_value(t, odid3.set_encoding(&refused.v2, odid3.Encoding.Latin1), bad)
+		testing.expect_value(t, frames_snapshot(&refused.v2), before)
+		_, err := odid3.render(&refused.v2, {encoding = .Latin1}, context.temp_allocator)
+		testing.expect_value(t, err, bad)
+	}
+	reordered := read(t, tag_file(4, 0, frame(4, "TIT2", text("\x01\xFF\xFEA\x00B"))))
+	defer odid3.destroy(&reordered)
+	_, err := odid3.render(&reordered.v2, {utf16_byte_order = .Big_Endian}, context.temp_allocator)
+	testing.expect_value(t, err, bad)
+
+	// An odd last NUL, and NULs alone after a comment or a URL (such as a doubled terminator),
+	// hold nothing either.
+	nothing_lost := [?]struct {
+		frame: []u8,
+		want:  string,
+	} {
+		{frame(4, "TIT2", {0x02, 0x00, 'A', 0x00}), "\x00A"},
+		{frame(4, "TPE1", text("\x01\xFF\xFEA\x00\x00")), "\x00A"},
+		{
+			frame(4, "COMM", concat({2}, text("eng"), {0x00, 'd', 0, 0, 0x00, 'A', 0x00})),
+			"\x00engd\x00A",
+		},
+		{frame(4, "COMM", text("\x03engd\x00text\x00\x00")), "\x00engd\x00text"},
+		{
+			frame(
+				4,
+				"COMM",
+				concat(
+					{1},
+					text("eng"),
+					utf16("d", .Little_Endian),
+					{0, 0},
+					utf16("c", .Little_Endian),
+					zeros(5),
+				),
+			),
+			"\x00engd\x00c",
+		},
+		{frame(4, "WXXX", text("\x03site\x00http://x\x00\x00")), "\x00site\x00http://x"},
+	}
+	for c in nothing_lost {
+		tags := read(t, tag_file(4, 0, c.frame))
+		defer odid3.destroy(&tags)
+		testing.expect_value(t, odid3.set_encoding(&tags.v2, odid3.Encoding.Latin1), nil)
+		testing.expect_value(t, string(tags.v2.frames[0].data), c.want)
+	}
+}
+
+@(test)
 a_real_replacement_character_survives :: proc(t: ^testing.T) {
 	// U+FFFD written as it should be (FD FF or FF FD) is a character like any other. Strings
 	// without a byte order mark follow a big endian first string, where 00 D8 is "Ø".

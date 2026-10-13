@@ -105,9 +105,9 @@ expect_frames :: proc(t: ^testing.T, tag: ^odid3.Tag, want: []string, loc := #ca
 
 @(test)
 text_a_conversion_carries_in_part :: proc(t: ^testing.T) {
-	// Re-encoded for ID3v2.3, bytes after a URL or a comment and a surrogate without its pair
-	// (D8 00 in UTF-16BE, 00 D8 after a little endian byte order mark) cannot be carried: the
-	// frames are kept without them, the surrogate as U+FFFD, and listed.
+	// Re-encoded for ID3v2.3, text after a URL or a comment, a surrogate without its pair (D8 00
+	// in UTF-16BE, 00 D8 after a little endian byte order mark) and an odd last byte of UTF-16
+	// cannot be carried: the frames are kept without them, the surrogate as U+FFFD, and listed.
 	partly := read(
 		t,
 		tag_file(
@@ -121,6 +121,7 @@ text_a_conversion_carries_in_part :: proc(t: ^testing.T) {
 				"TPE1",
 				concat({1}, utf16("B", .Little_Endian), {0, 0, 0xFF, 0xFE, 0x00, 0xD8}),
 			),
+			frame(4, "TALB", {0x02, 0x00, 'A', 'B'}),
 		),
 	)
 	defer odid3.destroy(&partly)
@@ -132,6 +133,7 @@ text_a_conversion_carries_in_part :: proc(t: ^testing.T) {
 			{"COMM", .Partly_Converted},
 			{"TIT2", .Partly_Converted},
 			{"TPE1", .Partly_Converted},
+			{"TALB", .Partly_Converted},
 		},
 	)
 	expect_frames(
@@ -142,10 +144,12 @@ text_a_conversion_carries_in_part :: proc(t: ^testing.T) {
 			"\x00engd\x00text",
 			"\x01\xFF\xFE\xFD\xFF\x41\x00",
 			"\x01\xFF\xFEB\x00/\x00\xFD\xFF",
+			"\x00A",
 		},
 	)
 
-	// A real U+FFFD is a character like any other, and a final terminator is no lost byte.
+	// A real U+FFFD is a character like any other, and neither a final terminator, even doubled,
+	// nor an odd last NUL of UTF-16 is a lost byte.
 	whole := read(
 		t,
 		tag_file(
@@ -159,6 +163,9 @@ text_a_conversion_carries_in_part :: proc(t: ^testing.T) {
 				"TPE1",
 				concat({1}, utf16("B", .Little_Endian), {0, 0}, utf16("\uFFFD", .Little_Endian)),
 			),
+			frame(4, "WXXX", text("\x03w\x00http://y\x00\x00")),
+			frame(4, "COMM", text("\x03enge\x00text\x00\x00")),
+			frame(4, "TALB", {0x02, 0x00, 'A', 0x00}),
 		),
 	)
 	defer odid3.destroy(&whole)
@@ -171,6 +178,9 @@ text_a_conversion_carries_in_part :: proc(t: ^testing.T) {
 			"\x01eng\xFF\xFEd\x00\x00\x00\xFF\xFE\xFD\xFF",
 			"\x01\xFF\xFE\xFD\xFF\x41\x00",
 			"\x01\xFF\xFEB\x00/\x00\xFD\xFF",
+			"\x00w\x00http://y",
+			"\x00enge\x00text",
+			"\x00A",
 		},
 	)
 
@@ -196,8 +206,9 @@ rebuilt_frames_carry_text_in_part :: proc(t: ^testing.T) {
 
 	// People, the original year, the year and picture descriptions are decoded and encoded again:
 	// a surrogate without its pair (00 D8 after a little endian byte order mark) becomes U+FFFD
-	// and the frame is listed, once even when merged into a frame of another group; a real U+FFFD
-	// (FD FF) is carried as it is. Values after the first of a TDAT or TIME are listed too.
+	// and the frame is listed, once even when merged into a frame of another group, as when an
+	// odd last byte other than a NUL is dropped; a real U+FFFD (FD FF) is carried as it is. Values
+	// after the first of a TDAT or TIME are listed too.
 	lone := []u8{0xFF, 0xFE, 0x00, 0xD8}
 	real := []u8{0xFF, 0xFE, 0xFD, 0xFF}
 	cases := []struct {
@@ -220,6 +231,20 @@ rebuilt_frames_carry_text_in_part :: proc(t: ^testing.T) {
 			.V2_4,
 			"",
 			"\x01\xFF\xFEp\x00\x00\x00\xFF\xFE\xFD\xFF\x00\x00",
+		},
+		{
+			3,
+			frame(3, "IPLS", {1, 0xFF, 0xFE, 'p', 0, 0, 0, 0xFF, 0xFE, 'A'}),
+			.V2_4,
+			"IPLS",
+			"\x01\xFF\xFEp\x00\x00\x00\xFF\xFE\x00\x00",
+		},
+		{
+			3,
+			frame(3, "IPLS", {1, 0xFF, 0xFE, 'p', 0, 0, 0, 0xFF, 0xFE, 'A', 0, 0}),
+			.V2_4,
+			"",
+			"\x01\xFF\xFEp\x00\x00\x00\xFF\xFEA\x00\x00\x00",
 		},
 		{
 			4,

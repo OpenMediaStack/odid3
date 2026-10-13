@@ -32,8 +32,8 @@ Drop_Reason :: enum u8 {
 	// Converted, but part of its value has no place in the target version: a date's seconds or a
 	// month without its day in ID3v2.3, values after the first, the group of a frame merged into
 	// a frame of another group; or re-encoded without what its text held that does not decode
-	// (bytes after a comment, lyrics or the URL of a WXXX, a UTF-16 surrogate without its pair,
-	// which becomes U+FFFD).
+	// (bytes other than NULs after a comment, lyrics or the URL of a WXXX, a UTF-16 surrogate
+	// without its pair, which becomes U+FFFD, an odd last byte of UTF-16 text other than a NUL).
 	Partly_Converted,
 }
 
@@ -267,8 +267,8 @@ drop_reason_of :: proc(f: ^Frame) -> Drop_Reason {
 
 // The first value of a text frame, cloned with the tag's allocator; ok is false when the frame
 // does not decode as text. partly tells whether the frame holds what the value cannot carry: text
-// after a terminator, read as ID3v2.4 reads it, or a UTF-16 surrogate without its pair, which
-// becomes U+FFFD.
+// after a terminator, read as ID3v2.4 reads it, or text that does not decode whole (a UTF-16
+// surrogate without its pair, which becomes U+FFFD, or an odd last byte other than a NUL).
 @(private)
 first_value :: proc(tag: ^Tag, f: ^Frame) -> (value: string, partly, ok: bool, err: Error) {
 	content := decode_owned(f, .V2_4, tag.allocator) or_return
@@ -467,7 +467,8 @@ convert_people :: proc(
 
 // Appends the strings of a people frame, padded to whole pairs, each read in the byte order
 // decode_values reads it in; ok is false when the frame does not decode, whole is false when a
-// UTF-16 string holds a surrogate without its pair, which becomes U+FFFD.
+// string does not decode whole (a UTF-16 surrogate without its pair, which becomes U+FFFD, or an
+// odd last byte other than a NUL).
 @(private)
 people_of_frame :: proc(
 	f: ^Frame,
@@ -487,7 +488,7 @@ people_of_frame :: proc(
 	for rest := f.data[1:]; len(rest) > 0; {
 		text: []u8
 		text, rest, _ = split_terminated(encoding, rest)
-		whole = whole && surrogates_paired(order, text)
+		whole = whole && decodes_whole(order, text)
 		value := decode_text(order, text, allocator) or_return
 		if _, append_err := append(people, value); append_err != nil {
 			delete(value, allocator)
