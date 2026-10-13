@@ -74,11 +74,11 @@ Reading is thread safe: any number of threads can read files at once. A tag keep
 
 Each frame has:
 
-- its `id`, and its `offset` in the file (-1 for a frame added or rebuilt since);
-- the `size` its header gives, and `stored_flags`, the two flag bytes of its header as read;
-- its `status` flags (`Discard_On_Tag_Alter`, `Discard_On_File_Alter`, `Read_Only`) and `format` flags (`Grouping`, `Compression`, `Encryption`, `Unsynchronisation`, `Data_Length_Indicator`), with the same names in ID3v2.3 and 2.4 (the last two exist in ID3v2.4 only);
+- its `id`, and its `offset` in the file: -1 for a frame not read from it (one a setter or `make_frame` made, one inside a chapter); `set_encoding` and `convert` keep it;
+- the `size` its header gave when read (0 for a new frame; in an ID3v2.2 or 2.3 tag unsynchronised as a whole, it counts the bytes with unsynchronisation undone, so the frame takes more room in the file), and `stored_flags`, the two flag bytes of its header as read;
+- its `status` flags (`Discard_On_Tag_Alter`, `Discard_On_File_Alter`, `Read_Only`) and `format` flags (`Grouping`, `Compression`, `Encryption`, `Unsynchronisation`, `Data_Length_Indicator`), with the same names in ID3v2.3 and 2.4 (the last two exist in ID3v2.4 only, where `format` holds `Unsynchronisation` too when only the tag header set it); ID3v2.2 frames have none;
 - its `group` byte and encryption `method` when its format has them, and `data_length`, the data length indicator of ID3v2.4 or the decompressed size of ID3v2.3 (-1 when it has none);
-- its `data`, with unsynchronisation undone and compressed content inflated, and a `problem` when the data is not its content (encrypted, badly compressed, too short for its flags).
+- its `data`, with unsynchronisation undone and compressed content inflated, and its `problem` when something is wrong: `Encrypted`, `Bad_Compression` and `Too_Short` leave the bytes as stored (unsynchronisation undone), `Bad_Unsynchronisation` the bytes as stored (the flag lied), `Bad_Data_Length` what was decoded, and `Skipped_Picture` nil.
 
 ```odin
 for &frame in tags.v2.frames {
@@ -132,21 +132,24 @@ save :: proc(path: string, tags: ^id3.Tags) {
 		case .Damaged_Tag:
 			// What could not be read would be lost: ask, then write with replace_damaged.
 		case .File_Changed:
-			// Another program wrote the file meanwhile: read it again.
+			// Another program wrote the file while it was being written: read it again.
 		case .Incomplete_Tag:
 			// Read with skip_picture_data: read it again without.
 		case .Not_Encodable, .Encoding_Not_In_Version:
-			// The text or the version needs another encoding.
+			// Write_Options.encoding, or a frame made by hand, asks for an encoding the text or
+			// the version cannot hold: choose another one.
 		case:
 			fmt.println("cannot write", path, e)
 		}
 	case os.Error:
 		fmt.println("cannot write", path, os.error_string(e))
 	case runtime.Allocator_Error:
-		fmt.println("out of memory")
+		fmt.println("cannot write", path, e)
 	}
 }
 ```
+
+The other format errors a write gives (`Not_In_Version`, `Tag_Too_Large`, `Bad_Frame_Id`, `Bad_Content`) come from the write options or from frames made by hand: the caller has to change them.
 
 An ID3v1 tag whose values are unchanged keeps its bytes. A changed one is written from `tags.v1` in its `encoding`: Latin-1, the spec's (with `?` for what Latin-1 lacks), or UTF-8 when its text was read as UTF-8, as ffmpeg and some taggers write it. `Write_Options.v1_encoding` forces one or the other. `sync_v1` rebuilds ID3v1 from the fields, in the encoding it is given (the same as the write option's, when one is set) or the one the file had, and returns the fields that do not fit (characters in Latin-1, bytes in UTF-8); on a `clone` of the tags, it previews them.
 
