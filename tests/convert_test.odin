@@ -172,6 +172,34 @@ a_conversion_keeps_the_encodings_the_target_has :: proc(t: ^testing.T) {
 			.V2_3,
 			concat({1}, utf16("坂/本", .Little_Endian)),
 		},
+		{
+			4,
+			frame(
+				4,
+				"TPE1",
+				concat({1}, utf16("Ada", .Little_Endian), {0, 0, 'B', 0, 'e', 0, 'a', 0}),
+				0,
+				0x02,
+			),
+			.V2_3,
+			concat({1}, utf16("Ada/Bea", .Little_Endian)),
+		},
+		{
+			4,
+			frame(
+				4,
+				"APIC",
+				concat(
+					text("\x01image/jpeg\x00\x03"),
+					utf16("d", .Big_Endian),
+					{0, 0, 0xFF, 0xE0},
+				),
+				0,
+				0x02,
+			),
+			.V2_2,
+			concat(text("\x01JPG\x03"), utf16("d", .Big_Endian), {0, 0, 0xFF, 0xE0}),
+		},
 	}
 	for c in cases {
 		tags := read(t, tag_file(c.major, 0, c.frame))
