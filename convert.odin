@@ -965,8 +965,9 @@ date_to_v23 :: proc(
 // or, before ID3v2.4, several values, which ID3v2.3 joins with "/" (genre references go in
 // parentheses before the rest); a frame whose encoding the version has keeps it, with its byte
 // order. ok is false when such a frame cannot be decoded and encoded again; one whose text does
-// not decode whole is re-encoded without what is lost, and listed. The frame keeps where it was
-// read, as set_encoding's do, so that render still takes the odd ID of a frame read from a file.
+// not decode whole is re-encoded without what is lost, and listed. A re-encoded frame keeps its
+// offset and size, as set_encoding's frames do, so that render still takes the odd ID of a frame
+// read from a file.
 @(private)
 convert_text :: proc(
 	tag: ^Tag,
