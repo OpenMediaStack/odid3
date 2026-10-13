@@ -1023,4 +1023,17 @@ v22_frames_are_listed_under_their_ids :: proc(t: ^testing.T) {
 		}
 	}
 	testing.expect(t, succeeded)
+
+	// A frame a caller added under a 4 letter ID is dropped under that ID.
+	added := read(t, tag_file(2, 0, frame22("TYE", text("\x002019"))))
+	defer odid3.destroy(&added)
+	for id in ([]string{"TYER", "RVAD"}) {
+		f := odid3.make_frame(id, text("\x00x"), added.v2.allocator)
+		testing.expect_value(t, odid3.add_frame(&added.v2, f), nil)
+	}
+	expect_dropped(
+		t,
+		convert(t, &added.v2, .V2_4),
+		{{"TYER", .No_Equivalent}, {"RVAD", .No_Equivalent}},
+	)
 }
