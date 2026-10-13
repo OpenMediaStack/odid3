@@ -110,7 +110,7 @@ text_a_conversion_carries_in_part :: proc(t: ^testing.T) {
 		}
 	}
 
-	// Re-encoded for ID3v2.3, bytes after a URL or a comment, a surrogate without its pair (D8 00
+	// Re-encoded for ID3v2.3, text after a URL or a comment, a surrogate without its pair (D8 00
 	// in UTF-16BE, 00 D8 after a little endian byte order mark) and an odd last byte of UTF-16
 	// cannot be carried: the frames are kept without them, the surrogate as U+FFFD, and listed.
 	partly := read(

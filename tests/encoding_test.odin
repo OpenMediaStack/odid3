@@ -228,6 +228,11 @@ odd_utf16_bytes_and_nuls_after_the_text :: proc(t: ^testing.T) {
 		frame(4, "TPE1", text("\x01\xFF\xFEA\x00B")),
 		frame(4, "TXXX", concat({1}, utf16("d", .Little_Endian), {0, 0}, text("A\x00B"))),
 		frame(4, "COMM", concat({2}, text("eng"), {0x00, 'd', 0, 0, 0x00, 'A', 'B'})),
+		frame(4, "TPE2", text("\x01\xFF\xFEA\x00\x00\x00B")),
+		frame(4, "COMM", concat({1}, text("eng"), utf16("d", .Little_Endian), {'B'})),
+		// Text after NULs is no terminator.
+		frame(4, "COMM", text("\x03engd\x00text\x00\x00X")),
+		frame(4, "WXXX", text("\x03d\x00http://x\x00\x00X")),
 	}
 	for odd in odd_bytes {
 		refused := read(t, tag_file(4, 0, odd))
@@ -238,8 +243,13 @@ odd_utf16_bytes_and_nuls_after_the_text :: proc(t: ^testing.T) {
 		_, err := odid3.render(&refused.v2, {encoding = .Latin1}, context.temp_allocator)
 		testing.expect_value(t, err, bad)
 	}
+	reordered := read(t, tag_file(4, 0, frame(4, "TIT2", text("\x01\xFF\xFEA\x00B"))))
+	defer odid3.destroy(&reordered)
+	_, err := odid3.render(&reordered.v2, {utf16_byte_order = .Big_Endian}, context.temp_allocator)
+	testing.expect_value(t, err, bad)
 
-	// NULs alone after a comment or a URL, such as a doubled terminator, hold nothing either.
+	// An odd last NUL, and NULs alone after a comment or a URL (such as a doubled terminator),
+	// hold nothing either.
 	nothing_lost := [?]struct {
 		frame: []u8,
 		want:  string,

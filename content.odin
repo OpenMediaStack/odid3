@@ -919,9 +919,9 @@ v22_image_format :: proc(mime: string) -> string {
 // Re-encodes the text of a frame, or of every frame of a tag that holds text, chapters included.
 // Text the encoding cannot hold gives .Not_Encodable and changes nothing, an encoding the version
 // lacks .Encoding_Not_In_Version. A frame already in the encoding is left as it is. Text that would
-// not survive (bytes after the text of a comment or the URL of a WXXX, a UTF-16 surrogate without
-// its pair) gives .Bad_Content rather than being changed; before ID3v2.4, several values are
-// joined with "/". UTF-16 with a byte order mark is written in byte_order, and a frame already in
+// not survive (bytes other than NULs after the text of a comment or the URL of a WXXX, a UTF-16
+// surrogate without its pair, an odd last byte of UTF-16 text other than a NUL) gives .Bad_Content
+// rather than being changed; before ID3v2.4, several values are joined with "/". UTF-16 with a byte order mark is written in byte_order, and a frame already in
 // the encoding but in the other order is re-encoded; nil keeps the order of a frame already in
 // UTF-16 and writes the others little endian.
 set_encoding :: proc {
