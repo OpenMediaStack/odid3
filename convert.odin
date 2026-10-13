@@ -699,100 +699,25 @@ change_picture_layout :: proc(
 	return true, nil
 }
 
-// ID3v2.2 IDs and their ID3v2.3 counterparts, iTunes' own included. LNK and CRM are missing: their
-// layouts have no counterpart.
-@(private, rodata)
-V22_IDS := [?][2]string {
-	{"BUF", "RBUF"},
-	{"CNT", "PCNT"},
-	{"COM", "COMM"},
-	{"CRA", "AENC"},
-	{"EQU", "EQUA"},
-	{"ETC", "ETCO"},
-	{"GEO", "GEOB"},
-	{"GP1", "GRP1"},
-	{"IPL", "IPLS"},
-	{"MCI", "MCDI"},
-	{"MLL", "MLLT"},
-	{"MVI", "MVIN"},
-	{"MVN", "MVNM"},
-	{"PIC", "APIC"},
-	{"POP", "POPM"},
-	{"REV", "RVRB"},
-	{"RVA", "RVAD"},
-	{"SLT", "SYLT"},
-	{"STC", "SYTC"},
-	{"TAL", "TALB"},
-	{"TBP", "TBPM"},
-	{"TCM", "TCOM"},
-	{"TCO", "TCON"},
-	{"TCP", "TCMP"},
-	{"TCR", "TCOP"},
-	{"TDA", "TDAT"},
-	{"TDY", "TDLY"},
-	{"TEN", "TENC"},
-	{"TFT", "TFLT"},
-	{"TIM", "TIME"},
-	{"TKE", "TKEY"},
-	{"TLA", "TLAN"},
-	{"TLE", "TLEN"},
-	{"TMT", "TMED"},
-	{"TOA", "TOPE"},
-	{"TOF", "TOFN"},
-	{"TOL", "TOLY"},
-	{"TOR", "TORY"},
-	{"TOT", "TOAL"},
-	{"TP1", "TPE1"},
-	{"TP2", "TPE2"},
-	{"TP3", "TPE3"},
-	{"TP4", "TPE4"},
-	{"TPA", "TPOS"},
-	{"TPB", "TPUB"},
-	{"TRC", "TSRC"},
-	{"TRD", "TRDA"},
-	{"TRK", "TRCK"},
-	{"TS2", "TSO2"},
-	{"TSA", "TSOA"},
-	{"TSC", "TSOC"},
-	{"TSI", "TSIZ"},
-	{"TSP", "TSOP"},
-	{"TSS", "TSSE"},
-	{"TST", "TSOT"},
-	{"TT1", "TIT1"},
-	{"TT2", "TIT2"},
-	{"TT3", "TIT3"},
-	{"TXT", "TEXT"},
-	{"TXX", "TXXX"},
-	{"TYE", "TYER"},
-	{"UFI", "UFID"},
-	{"ULT", "USLT"},
-	{"WAF", "WOAF"},
-	{"WAR", "WOAR"},
-	{"WAS", "WOAS"},
-	{"WCM", "WCOM"},
-	{"WCP", "WCOP"},
-	{"WPB", "WPUB"},
-	{"WXX", "WXXX"},
-}
-
+// The ID3v2.3 ID of an ID3v2.2 frame, "" for one ID3v2.3 has no counterpart for (CRM, LNK).
 @(private)
 v22_to_v23 :: proc(id: string) -> string {
-	for pair in V22_IDS {
-		if pair[0] == id {
-			return pair[1]
-		}
-	}
-	return ""
+	return counterpart(id, .V2_2, .V2_3)
 }
 
 @(private)
 v23_to_v22 :: proc(id: string) -> string {
-	for pair in V22_IDS {
-		if pair[1] == id {
-			return pair[0]
-		}
+	return counterpart(id, .V2_3, .V2_2)
+}
+
+@(private = "file")
+counterpart :: proc(id: string, from, to: V2_Version) -> string {
+	kind, known := frame_kind(id, from)
+	if !known {
+		return ""
 	}
-	return ""
+	target, _ := frame_id(kind, to)
+	return target
 }
 
 // Frees the IDs of dropped frames and the list, with the allocator given to convert.
@@ -804,135 +729,19 @@ destroy_dropped :: proc(dropped: ^Dropped_Frames, allocator := context.allocator
 	dropped^ = nil
 }
 
-@(private, rodata)
-ORIGINAL_YEAR_IDS := []string{"TDOR", "TORY", "TOR"}
-@(private, rodata)
-PEOPLE_IDS := []string{"IPLS", "TIPL", "TMCL", "IPL"}
-
 // Frames whose binary layout changed between ID3v2.3 and 2.4.
 @(private, rodata)
-V23_ONLY := []string{"EQUA", "RVAD"}
+V23_ONLY := Frame_Kinds{.EQUA, .RVAD}
 @(private, rodata)
-V24_ONLY := []string{"EQU2", "RVA2", "ASPI", "SEEK", "SIGN"}
-
-// The frames of ID3v2.3 and 2.4, with chapters and the frames iTunes added: any other frame is one
-// odid3 does not know.
-@(private, rodata)
-KNOWN_FRAMES := []string {
-	"AENC",
-	"APIC",
-	"ASPI",
-	"CHAP",
-	"COMM",
-	"COMR",
-	"CTOC",
-	"ENCR",
-	"EQU2",
-	"EQUA",
-	"ETCO",
-	"GEOB",
-	"GRID",
-	"GRP1",
-	"IPLS",
-	"LINK",
-	"MCDI",
-	"MLLT",
-	"MVIN",
-	"MVNM",
-	"OWNE",
-	"PCNT",
-	"PCST",
-	"POPM",
-	"POSS",
-	"PRIV",
-	"RBUF",
-	"RVA2",
-	"RVAD",
-	"RVRB",
-	"SEEK",
-	"SIGN",
-	"SYLT",
-	"SYTC",
-	"TALB",
-	"TBPM",
-	"TCAT",
-	"TCMP",
-	"TCOM",
-	"TCON",
-	"TCOP",
-	"TDAT",
-	"TDEN",
-	"TDES",
-	"TDLY",
-	"TDOR",
-	"TDRC",
-	"TDRL",
-	"TDTG",
-	"TENC",
-	"TEXT",
-	"TFLT",
-	"TGID",
-	"TIME",
-	"TIPL",
-	"TIT1",
-	"TIT2",
-	"TIT3",
-	"TKEY",
-	"TKWD",
-	"TLAN",
-	"TLEN",
-	"TMCL",
-	"TMED",
-	"TMOO",
-	"TOAL",
-	"TOFN",
-	"TOLY",
-	"TOPE",
-	"TORY",
-	"TOWN",
-	"TPE1",
-	"TPE2",
-	"TPE3",
-	"TPE4",
-	"TPOS",
-	"TPRO",
-	"TPUB",
-	"TRCK",
-	"TRDA",
-	"TRSN",
-	"TRSO",
-	"TSIZ",
-	"TSO2",
-	"TSOA",
-	"TSOC",
-	"TSOP",
-	"TSOT",
-	"TSRC",
-	"TSSE",
-	"TSST",
-	"TXXX",
-	"TYER",
-	"UFID",
-	"USER",
-	"USLT",
-	"WCOM",
-	"WCOP",
-	"WFED",
-	"WOAF",
-	"WOAR",
-	"WOAS",
-	"WORS",
-	"WPAY",
-	"WPUB",
-	"WXXX",
-}
+V24_ONLY := Frame_Kinds{.EQU2, .RVA2, .ASPI, .SEEK, .SIGN}
 
 @(private)
 conversion_drop :: proc(f: ^Frame, from, to: V2_Version) -> (reason: Drop_Reason, drop_it: bool) {
-	if to == .V2_3 && contains(V24_ONLY, f.id) || to == .V2_4 && contains(V23_ONLY, f.id) {
+	kind, known := frame_kind(f.id, from)
+	if known && (to == .V2_3 && kind in V24_ONLY || to == .V2_4 && kind in V23_ONLY) {
 		return .No_Equivalent, true
 	}
-	if .Discard_On_Tag_Alter in f.status && !contains(KNOWN_FRAMES, f.id) {
+	if .Discard_On_Tag_Alter in f.status && !known {
 		return .Discard_On_Tag_Alter, true
 	}
 	// A frame shorter than the bytes its flags announce would have other bytes taken for them in

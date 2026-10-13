@@ -93,6 +93,8 @@ for &frame in tags.v2.frames {
 }
 ```
 
+The frames odid3 knows also have a `Frame_Kind`, named after their ID3v2.3 or 2.4 ID, with their ID in each version: `id3.frame_id(.TYER, .V2_2)` gives `"TYE"`, and `id3.frame_kind(frame.id, tags.v2.version)` the kind of a frame read. `id3.find_frame(&tags.v2, .TIT2)` finds the `TT2` of an ID3v2.2 tag, and nothing for a kind the version cannot hold, such as `.CTOC`; `id3.make_frame(.CTOC, data, .V2_2)` gives `.Not_In_Version`. Frames of other IDs are kept all the same, and found or made by their ID.
+
 ### Editing and writing
 
 ```odin
