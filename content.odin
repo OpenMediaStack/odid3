@@ -695,7 +695,9 @@ big_endian_counter :: proc(b: []u8) -> (n: u64) {
 // that its encoding cannot hold gives .Not_Encodable, an encoding the version does not have
 // .Encoding_Not_In_Version, an ID of the wrong length .Bad_Frame_Id. Before ID3v2.4, several values
 // are joined with "/", as mutagen does. UTF-16 is written little endian after its byte order mark;
-// set_encoding gives a frame the other order.
+// set_encoding gives a frame the other order. The frames inside a Chapter or Table_Of_Contents are
+// checked as new ones, even those decoded from a file: an ID other than capital letters and digits
+// gives .Bad_Frame_Id, an encoding byte the version lacks .Encoding_Not_In_Version.
 encode_frame :: proc(
 	content: Frame_Content,
 	id: string,
@@ -824,21 +826,21 @@ render_embedded_frames :: proc(
 	data: ^[dynamic]u8,
 	frames: []Frame,
 	version: V2_Version,
-	read: bool,
+	frames_read: bool,
 ) -> Error {
 	for f in frames {
 		plain := f
 		if !is_stored(&plain) {
 			plain.format -= {.Compression}
 		}
-		render_frame(data, &plain, version, read = read) or_return
+		render_frame(data, &plain, version, read = frames_read) or_return
 	}
 	return nil
 }
 
-// encode_frame for a CHAP or CTOC that odid3 decoded: the frames inside were read from its bytes,
-// so they keep what render keeps in a frame read from a tag (an encoding byte above 3, UTF-8 in
-// ID3v2.3) rather than being refused as new frames are.
+// encode_frame for a CHAP or CTOC that odid3 decoded: the frames inside were read from its bytes
+// (or rebuilt by odid3, valid anyway), so they keep what render keeps in a frame read from a tag,
+// an odd ID or an encoding byte the version lacks, rather than being refused as new frames are.
 @(private)
 encode_decoded_chapter :: proc(
 	content: Frame_Content,

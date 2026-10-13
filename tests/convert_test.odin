@@ -832,14 +832,19 @@ chapters_follow_the_version :: proc(t: ^testing.T) {
 }
 
 @(test)
-unknown_encodings_inside_chapters :: proc(t: ^testing.T) {
-	// A frame whose encoding byte is above 3 (a damaged file) stays as it is through a conversion,
-	// inside a CHAP or CTOC as at top level, and the chapter converts.
+chapters_keep_what_top_level_keeps :: proc(t: ^testing.T) {
+	// What odid3 would not make but keeps from a damaged file, an encoding byte above 3 or an odd
+	// ID (ID3v2.2's 3 letters and a NUL), stays as it is through a conversion, inside a CHAP or
+	// CTOC as at top level, while the frames beside it convert.
 	for major in ([]u8{3, 4}) {
 		to: odid3.V2_Version = .V2_4 if major == 3 else .V2_3
-		damaged := frame(major, "TIT2", {0x05, 0x41})
-		table := frame(major, "CTOC", concat(text("toc\x00"), {0x03, 0x00}, damaged))
-		for body in ([][]u8{damaged, chapter_frame(major, "ch0", 0, 10, damaged), table}) {
+		frames := concat(
+			frame(major, "TIT2", {0x05, 0x41}),
+			frame(major, "TT2\x00", text("\x00T")),
+			frame(major, "TYER" if major == 3 else "TDRC", text("\x002019")),
+		)
+		table := frame(major, "CTOC", concat(text("toc\x00"), {0x03, 0x00}, frames))
+		for body in ([][]u8{frames, chapter_frame(major, "ch0", 0, 10, frames), table}) {
 			tags := read(t, tag_file(major, 0, body))
 			defer odid3.destroy(&tags)
 			expect_dropped(t, convert(t, &tags.v2, to), {})
@@ -847,28 +852,36 @@ unknown_encodings_inside_chapters :: proc(t: ^testing.T) {
 			testing.expect_value(t, err, nil)
 			again := read(t, rendered)
 			defer odid3.destroy(&again)
-			if len(again.v2.frames) != 1 {
-				testing.expectf(t, false, "%s: %d frames", body[:4], len(again.v2.frames))
-				continue
-			}
 			inside := again.v2.frames[:]
-			if again.v2.frames[0].id != "TIT2" {
-				#partial switch c in decode(t, &again.v2.frames[0], to) {
+			if len(inside) == 1 {
+				#partial switch c in decode(t, &inside[0], to) {
 				case odid3.Chapter:
 					inside = c.frames[:]
 				case odid3.Table_Of_Contents:
 					inside = c.frames[:]
 				}
 			}
-			testing.expect_value(t, len(inside), 1)
-			if len(inside) == 1 {
+			ids := make([dynamic]string, context.temp_allocator)
+			for f in inside {
+				append(&ids, f.id)
+			}
+			date := "TDRC" if to == .V2_4 else "TYER"
+			testing.expectf(
+				t,
+				slice.equal(ids[:], []string{"TIT2", "TT2\x00", date}),
+				"%s: %q",
+				body[:4],
+				ids,
+			)
+			if len(inside) == 3 {
 				testing.expectf(
 					t,
-					inside[0].id == "TIT2" && slice.equal(inside[0].data, []u8{0x05, 0x41}),
-					"%s: %s %x",
+					slice.equal(inside[0].data, []u8{0x05, 0x41}) &&
+					string(inside[1].data) == "\x00T",
+					"%s: %x %x",
 					body[:4],
-					inside[0].id,
 					inside[0].data,
+					inside[1].data,
 				)
 			}
 		}

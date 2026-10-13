@@ -420,37 +420,63 @@ frames_with_problems_and_chapters :: proc(t: ^testing.T) {
 		odid3.Error(odid3.Format_Error.Not_Encodable),
 	)
 
-	// What stays as it is in a frame read at top level stays inside a chapter too, while the
-	// frames beside it change: an unknown encoding byte, and UTF-8 in ID3v2.3 when only the byte
-	// order of UTF-16 changes.
-	latin := frame(3, "TIT2", text("\x00T"))
-	unknown := read(
-		t,
-		tag_file(3, 0, chapter_frame(3, "ch0", 0, 10, frame(3, "TALB", text("\x07abc")), latin)),
+	// What render keeps in a frame read at top level, an encoding byte above 3 or an odd ID, it
+	// keeps inside a chapter too, while set_encoding and the write options change the frames
+	// beside it; so does UTF-8 in ID3v2.3 when only the byte order of UTF-16 changes.
+	odd := chapter_frame(
+		3,
+		"ch0",
+		0,
+		10,
+		frame(3, "TALB", text("\x07abc")),
+		frame(3, "TT2\x00", text("\x00T")),
+		frame(3, "TIT2", text("\x00T")),
 	)
+	unknown := read(t, tag_file(3, 0, odd))
 	defer odid3.destroy(&unknown)
-	_, option_err := odid3.render(&unknown.v2, {encoding = .UTF16}, context.temp_allocator)
+	rendered, option_err := odid3.render(&unknown.v2, {encoding = .UTF16}, context.temp_allocator)
 	testing.expect_value(t, option_err, nil)
+	written := read(t, rendered)
+	defer odid3.destroy(&written)
 	testing.expect_value(t, odid3.set_encoding(&unknown.v2, odid3.Encoding.UTF16), nil)
-	chapter = expect_content(t, decode(t, &unknown.v2.frames[0], .V2_3), odid3.Chapter)
-	testing.expect(
-		t,
-		len(chapter.frames) == 2 &&
-		string(chapter.frames[0].data) == "\x07abc" &&
-		chapter.frames[1].data[0] == 1,
-	)
+	for tag in ([]^odid3.Tag{&written.v2, &unknown.v2}) {
+		if !testing.expect_value(t, len(tag.frames), 1) {
+			continue
+		}
+		chapter = expect_content(t, decode(t, &tag.frames[0], .V2_3), odid3.Chapter)
+		testing.expect(
+			t,
+			len(chapter.frames) == 3 &&
+			string(chapter.frames[0].data) == "\x07abc" &&
+			chapter.frames[1].id == "TT2\x00" &&
+			string(chapter.frames[1].data) == "\x01\xFF\xFET\x00" &&
+			string(chapter.frames[2].data) == "\x01\xFF\xFET\x00",
+		)
+	}
 	little := frame(3, "TIT2", concat({1}, utf16("T", .Little_Endian)))
 	utf8 := read(
 		t,
 		tag_file(3, 0, chapter_frame(3, "ch0", 0, 10, frame(3, "TALB", text("\x03abc")), little)),
 	)
 	defer odid3.destroy(&utf8)
-	_, order_err := odid3.render(
+	ordered, order_err := odid3.render(
 		&utf8.v2,
 		{utf16_byte_order = .Big_Endian},
 		context.temp_allocator,
 	)
 	testing.expect_value(t, order_err, nil)
+	big := read(t, ordered)
+	defer odid3.destroy(&big)
+	if !testing.expect_value(t, len(big.v2.frames), 1) {
+		return
+	}
+	chapter = expect_content(t, decode(t, &big.v2.frames[0], .V2_3), odid3.Chapter)
+	testing.expect(
+		t,
+		len(chapter.frames) == 2 &&
+		string(chapter.frames[0].data) == "\x03abc" &&
+		string(chapter.frames[1].data) == "\x01\xFE\xFF\x00T",
+	)
 }
 
 @(test)
