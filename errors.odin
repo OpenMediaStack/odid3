@@ -17,7 +17,8 @@ Format_Error :: enum u8 {
 	// decode_frame on a frame whose data is not its content: encrypted, badly compressed, skipped,
 	// or shorter than its flags announce.
 	Not_Decodable,
-	// Frame data that does not follow the layout of its frame.
+	// Frame data that does not follow the layout of its frame; set_encoding on one frame also gives
+	// it for text it cannot re-encode whole.
 	Bad_Content,
 	// A version that is .None where one is needed: rendering a tag, setting a field, encoding a
 	// frame, making one from a kind.

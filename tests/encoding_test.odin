@@ -132,7 +132,8 @@ encodings_change_nothing_else :: proc(t: ^testing.T) {
 
 // A frame whose text would not survive re-encoding, in a tag of version major: set_encoding on the
 // tag and the write options leave it as it is and change a title beside it as they would alone,
-// while set_encoding on that frame alone gives .Bad_Content.
+// while set_encoding on that frame alone gives .Bad_Content. The byte order only reaches a frame in
+// UTF-16 with a byte order mark.
 expect_left_as_is :: proc(
 	t: ^testing.T,
 	major: u8,
@@ -144,6 +145,7 @@ expect_left_as_is :: proc(
 	expect_kept :: proc(
 		t: ^testing.T,
 		tag, alone: ^odid3.Tag,
+		id: string,
 		data: []u8,
 		loc := #caller_location,
 	) {
@@ -151,6 +153,7 @@ expect_left_as_is :: proc(
 			t,
 			len(tag.frames) == 2 &&
 			len(alone.frames) == 1 &&
+			tag.frames[0].id == id &&
 			bytes.equal(tag.frames[0].data, data) &&
 			bytes.equal(tag.frames[1].data, alone.frames[0].data),
 			"%x: %d frames",
@@ -159,8 +162,10 @@ expect_left_as_is :: proc(
 			loc = loc,
 		)
 	}
-	in_utf16 := concat({1}, utf16("T", .Little_Endian))
+	other_order := odid3.Byte_Order.Big_Endian if order == .Little_Endian else .Little_Endian
+	in_utf16 := concat({1}, utf16("T", other_order))
 	title := frame22("TT2", in_utf16) if major == 2 else frame(major, "TIT2", in_utf16)
+	id := string(kept[:3]) if major == 2 else string(kept[:4])
 	data := kept[6:] if major == 2 else kept[10:]
 	both := read(t, tag_file(major, 0, kept, title), loc)
 	defer odid3.destroy(&both)
@@ -175,17 +180,24 @@ expect_left_as_is :: proc(
 		defer odid3.destroy(&again)
 		title_alone := read(t, wanted, loc)
 		defer odid3.destroy(&title_alone)
-		expect_kept(t, &again.v2, &title_alone.v2, data, loc)
+		expect_kept(t, &again.v2, &title_alone.v2, id, data, loc)
 	}
-	testing.expect_value(
-		t,
-		odid3.set_encoding(&both.v2.frames[0], both.v2.version, encoding),
-		odid3.Error(odid3.Format_Error.Bad_Content),
-		loc = loc,
-	)
+	bad := odid3.Error(odid3.Format_Error.Bad_Content)
+	before := frames_snapshot(&both.v2)
+	refused := &both.v2.frames[0]
+	testing.expect_value(t, odid3.set_encoding(refused, both.v2.version, encoding), bad, loc = loc)
+	if data[0] == 1 {
+		testing.expect_value(
+			t,
+			odid3.set_encoding(refused, both.v2.version, .UTF16, order),
+			bad,
+			loc = loc,
+		)
+	}
+	testing.expect_value(t, frames_snapshot(&both.v2), before, loc = loc)
 	testing.expect_value(t, odid3.set_encoding(&both.v2, encoding, order), nil, loc = loc)
 	testing.expect_value(t, odid3.set_encoding(&alone.v2, encoding, order), nil, loc = loc)
-	expect_kept(t, &both.v2, &alone.v2, data, loc)
+	expect_kept(t, &both.v2, &alone.v2, id, data, loc)
 }
 
 @(test)
@@ -212,19 +224,31 @@ text_that_would_not_survive :: proc(t: ^testing.T) {
 	defer odid3.destroy(&chapters)
 	encoded, err := odid3.render(&chapters.v2, {encoding = .Latin1}, context.temp_allocator)
 	testing.expect_value(t, err, nil)
+	ordered, order_err := odid3.render(
+		&chapters.v2,
+		{utf16_byte_order = .Big_Endian},
+		context.temp_allocator,
+	)
+	testing.expect_value(t, order_err, nil)
 	testing.expect_value(t, odid3.set_encoding(&chapters.v2, odid3.Encoding.Latin1), nil)
 	latin1 := read(t, encoded)
 	defer odid3.destroy(&latin1)
-	for tag in ([]^odid3.Tag{&chapters.v2, &latin1.v2}) {
-		if !testing.expect_value(t, len(tag.frames), 1) {
+	big := read(t, ordered)
+	defer odid3.destroy(&big)
+	results := []struct {
+		tag:   ^odid3.Tag,
+		title: string,
+	}{{&chapters.v2, "\x00A"}, {&latin1.v2, "\x00A"}, {&big.v2, "\x01\xFE\xFF\x00A"}}
+	for r in results {
+		if !testing.expect_value(t, len(r.tag.frames), 1) {
 			continue
 		}
-		chapter := expect_content(t, decode(t, &tag.frames[0], .V2_4), odid3.Chapter)
+		chapter := expect_content(t, decode(t, &r.tag.frames[0], .V2_4), odid3.Chapter)
 		testing.expect(
 			t,
 			len(chapter.frames) == 2 &&
 			bytes.equal(chapter.frames[0].data, album[10:]) &&
-			string(chapter.frames[1].data) == "\x00A",
+			string(chapter.frames[1].data) == r.title,
 		)
 	}
 
@@ -296,6 +320,7 @@ odd_utf16_bytes_and_nuls_after_the_text :: proc(t: ^testing.T) {
 		frame(4, "COMM", concat({1}, text("eng"), utf16("d", .Little_Endian), {'B'})),
 		// Text after NULs is no terminator.
 		frame(4, "COMM", text("\x03engd\x00text\x00\x00X")),
+		frame(4, "USLT", text("\x03engd\x00lyrics\x00X")),
 		frame(4, "WXXX", text("\x03d\x00http://x\x00\x00X")),
 	}
 	for odd in odd_bytes {

@@ -978,8 +978,8 @@ set_frame_encoding :: proc(
 
 // See set_encoding. Every frame changes, or none; the frames set_frame_encoding refuses (as
 // .Not_Decodable, or as .Bad_Content: a COMM, USLT or APIC whose data does not follow its layout,
-// text that would not survive), empty ones, those with an unknown encoding byte and a CHAP or CTOC
-// whose content does not decode are left as they are.
+// one whose text would not survive), empty ones, those with an unknown encoding byte and a CHAP or
+// CTOC whose content does not decode are left as they are.
 set_tag_encoding :: proc(
 	tag: ^Tag,
 	encoding: Encoding,

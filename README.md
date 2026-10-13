@@ -151,7 +151,7 @@ save :: proc(path: string, tags: ^id3.Tags) {
 }
 ```
 
-The other format errors a write gives (`Not_In_Version`, `Tag_Too_Large`, `Bad_Frame_Id`, `Bad_Content`) come from the write options or from frames made by hand: the caller has to change them.
+The other format errors a write gives (`Not_In_Version`, `Tag_Too_Large`, `Bad_Frame_Id`) come from the write options or from frames made by hand: the caller has to change them.
 
 An ID3v1 tag whose values are unchanged keeps its bytes. A changed one is written from `tags.v1` in its `encoding`: Latin-1, the spec's (with `?` for what Latin-1 lacks), or UTF-8 when its text was read as UTF-8, as ffmpeg and some taggers write it. `Write_Options.v1_encoding` forces one or the other. `sync_v1` rebuilds ID3v1 from the fields, in the encoding it is given (the same as the write option's, when one is set) or the one the file had, and returns the fields that do not fit (characters in Latin-1, bytes in UTF-8); on a `clone` of the tags, it previews them.
 
