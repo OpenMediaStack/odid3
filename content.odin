@@ -755,11 +755,11 @@ encode_frame_in :: proc(
 	case Picture:
 		start_text(&data, c.encoding, version) or_return
 		if version == .V2_2 {
-			format := v22_image_format(c.mime)
-			if format == "" {
+			format, named := v22_image_format(c.mime)
+			if !named {
 				return {}, .Not_In_Version
 			}
-			append(&data, format) or_return
+			append(&data, ..format[:]) or_return
 		} else {
 			encode_string(&data, .Latin1, c.mime, true) or_return
 		}
@@ -919,23 +919,31 @@ append_counter :: proc(data: ^[dynamic]u8, counter: u64) -> runtime.Allocator_Er
 	return err
 }
 
+// A MIME type ID3v2.2 has no name for is the image format itself when it is 3 Latin-1 characters,
+// as decode_picture reads a format it does not know.
 @(private)
-v22_image_format :: proc(mime: string) -> string {
+v22_image_format :: proc(mime: string) -> (format: [3]u8, named: bool) {
 	switch {
 	case strings.equal_fold(mime, "image/jpeg"),
 	     strings.equal_fold(mime, "image/jpg"),
 	     strings.equal_fold(mime, "image/pjpeg"):
-		return "JPG"
+		return {'J', 'P', 'G'}, true
 	case strings.equal_fold(mime, "image/png"), strings.equal_fold(mime, "image/x-png"):
-		return "PNG"
+		return {'P', 'N', 'G'}, true
 	case strings.equal_fold(mime, "image/gif"):
-		return "GIF"
+		return {'G', 'I', 'F'}, true
 	case strings.equal_fold(mime, "image/bmp"):
-		return "BMP"
-	case len(mime) == 3:
-		return mime
+		return {'B', 'M', 'P'}, true
 	}
-	return ""
+	n := 0
+	for r in mime {
+		if n == len(format) || r > 0xFF {
+			return {}, false
+		}
+		format[n] = u8(r)
+		n += 1
+	}
+	return format, n == len(format)
 }
 
 // Re-encodes the text of a frame, or of every frame of a tag that holds text, chapters included.

@@ -411,6 +411,22 @@ values_set_cannot_hold :: proc(t: ^testing.T) {
 		odid3.set_picture(&v22.v2, webp),
 		odid3.Error(odid3.Format_Error.Not_In_Version),
 	)
+	// A MIME type of 3 Latin-1 characters is the image format itself; "éG" is 3 bytes in UTF-8,
+	// but 2 characters.
+	for mime in ([]string{"éG", "J€G", "JPEG"}) {
+		odd := webp
+		odd.mime = mime
+		testing.expect_value(
+			t,
+			odid3.set_picture(&v22.v2, odd),
+			odid3.Error(odid3.Format_Error.Not_In_Version),
+		)
+	}
+	testing.expect_value(t, len(v22.v2.frames), 0)
+	accented := webp
+	accented.mime = "JéG"
+	testing.expect_value(t, odid3.set_picture(&v22.v2, accented), nil)
+	testing.expect_value(t, string(v22.v2.frames[0].data), "\x00J\xE9G\x03\x00RIFF")
 }
 
 @(test)

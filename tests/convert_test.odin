@@ -1319,6 +1319,27 @@ what_v22_cannot_take :: proc(t: ^testing.T) {
 }
 
 @(test)
+converted_pictures_keep_their_image_format :: proc(t: ^testing.T) {
+	// A PIC's image format odid3 has no MIME type for is read as 3 Latin-1 characters: the MIME
+	// type of the APIC it becomes, which goes back to ID3v2.2 as it was. One of 2 characters has
+	// no place in a PIC.
+	format := []u8{'J', 0xE9, 'G'}
+	rest := concat({3}, utf16("d", .Big_Endian), {0, 0, 0xFF, 0xD8})
+	picture := concat({1}, format, rest)
+	for to in ([]odid3.V2_Version{.V2_3, .V2_4}) {
+		tags := read(t, tag_file(2, 0, frame22("PIC", picture)))
+		defer odid3.destroy(&tags)
+		expect_dropped(t, convert(t, &tags.v2, to), {})
+		expect_frames(t, &tags.v2, {string(concat({1}, format, {0}, rest))})
+		expect_dropped(t, convert(t, &tags.v2, .V2_2), {})
+		expect_frames(t, &tags.v2, {string(picture)})
+	}
+	short := read(t, tag_file(3, 0, frame(3, "APIC", concat({1}, format[1:], {0}, rest))))
+	defer odid3.destroy(&short)
+	expect_dropped(t, convert(t, &short.v2, .V2_2), {{"APIC", .No_Equivalent}})
+}
+
+@(test)
 v22_tags_not_read_whole :: proc(t: ^testing.T) {
 	compressed := read(t, tag_file(2, 0x40, frame22("TT2", text("\x00Title"))))
 	defer odid3.destroy(&compressed)
