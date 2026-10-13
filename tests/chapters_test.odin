@@ -37,13 +37,15 @@ compressed_frame :: proc(id: string, data: []u8) -> []u8 {
 }
 
 // CHAP and CTOC frames whose content does not decode: an element ID without its NUL, 15 bytes of
-// times instead of 16, flags without the number of children, a child ID without its NUL.
-undecodable_chapters :: proc(major: u8) -> [5][]u8 {
+// times instead of 16, flags without the number of children, a child ID without its NUL, fewer
+// child IDs than their number.
+undecodable_chapters :: proc(major: u8) -> [6][]u8 {
 	return {
 		frame(major, "CHAP", text("ch0")),
 		frame(major, "CHAP", concat(text("ch0\x00"), zeros(15))),
 		frame(major, "CTOC", text("toc")),
 		frame(major, "CTOC", text("toc\x00\x03")),
+		frame(major, "CTOC", text("toc\x00\x03\x01ch0")),
 		frame(major, "CTOC", text("toc\x00\x03\x02ch0\x00")),
 	}
 }

@@ -231,9 +231,8 @@ same_group :: proc(a, b: ^Frame) -> bool {
 }
 
 // The frames inside a CHAP or CTOC are laid out in their tag's version: they are converted with
-// it, and the chapter encoded again. A chapter whose content does not decode (an element ID
-// without its NUL, times cut short, a child ID without its NUL) ends before any frame, so it stays
-// as it is.
+// it, and the chapter encoded again. A chapter whose header does not decode holds no frame odid3
+// can find, so it stays as it is.
 @(private)
 convert_chapter :: proc(
 	tag: ^Tag,
