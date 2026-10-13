@@ -21,17 +21,19 @@ Write_Options :: struct {
 	// The text encoding of every ID3v2 text frame, chapters included; nil keeps each frame's, one
 	// set on a frame with set_encoding included. The frames are re-encoded on a copy as
 	// set_encoding(&tag, encoding) does: those it does not decode (SYLT, GEOB, USER, OWNE, COMR,
-	// IPLS) and encrypted ones keep theirs, a CHAP or CTOC whose content does not decode stays as
-	// it is, and before ID3v2.4 several values are joined with "/". An encoding the version lacks
-	// gives Encoding_Not_In_Version, text it cannot hold Not_Encodable, text that would not survive
+	// IPLS) and encrypted ones keep theirs, a COMM, USLT or APIC whose data does not follow its
+	// layout and a CHAP or CTOC whose content does not decode stay as they are, and before ID3v2.4
+	// several values are joined with "/". An encoding the version lacks gives
+	// Encoding_Not_In_Version, text it cannot hold Not_Encodable, text that would not survive
 	// Bad_Content, and nothing is written.
 	encoding:          Maybe(Encoding),
 	// The byte order of UTF-16 text with a byte order mark (.UTF16), in every text frame that holds
 	// it once encoding applies; nil keeps each frame's, and writes frames encoding re-encodes
 	// little endian. A frame already in the order is left as it is; the others are re-encoded on a
 	// copy as set_encoding does, with the same exceptions (SYLT, GEOB, USER, OWNE, COMR, IPLS and
-	// encrypted frames keep theirs, a chapter whose content does not decode stays as it is) and
-	// errors (Bad_Content for text that would not survive).
+	// encrypted frames keep theirs, a COMM, USLT or APIC whose data does not follow its layout and
+	// a chapter whose content does not decode stay as they are) and errors (Bad_Content for text
+	// that would not survive).
 	utf16_byte_order:  Maybe(Byte_Order),
 	// The text encoding of ID3v1; nil keeps that of tags.v1 (UTF-8 when its text was read as
 	// UTF-8). sync_v1 and v1_from_tag do not see it: give them the same encoding to know what

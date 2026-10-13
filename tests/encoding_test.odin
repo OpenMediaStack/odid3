@@ -528,6 +528,93 @@ undecodable_chapters_keep_their_bytes :: proc(t: ^testing.T) {
 }
 
 @(test)
+undecodable_layouts_keep_their_bytes :: proc(t: ^testing.T) {
+	// A COMM, USLT or APIC whose data does not follow its layout holds no text odid3 can find:
+	// set_encoding on the tag and the write options leave it as it is, and change the frames beside
+	// it, while set_encoding on that frame alone refuses it.
+	for major in ([]u8{3, 4}) {
+		version := odid3.V2_Version.V2_3 if major == 3 else .V2_4
+		damaged := [?][]u8 {
+			frame(major, "COMM", text("\x00en")),
+			frame(major, "COMM", text("\x01")),
+			frame(major, "USLT", text("\x01en")),
+			frame(major, "APIC", text("\x00image/png")),
+			frame(major, "APIC", text("\x01image/png\x00")),
+			frame(major, "APIC", text("\x00image/png\x00\x03cover")),
+		}
+		for bad in damaged {
+			title := frame(major, "TIT2", concat({1}, utf16("T", .Little_Endian)))
+			tags := read(t, tag_file(major, 0, bad, title))
+			defer odid3.destroy(&tags)
+			encoded, encoding_err := odid3.render(
+				&tags.v2,
+				{encoding = .Latin1},
+				context.temp_allocator,
+			)
+			testing.expect_value(t, encoding_err, nil)
+			ordered, order_err := odid3.render(
+				&tags.v2,
+				{utf16_byte_order = .Big_Endian},
+				context.temp_allocator,
+			)
+			testing.expect_value(t, order_err, nil)
+			other := odid3.Encoding.UTF16 if bad[10] == 0 else .Latin1
+			testing.expect_value(
+				t,
+				odid3.set_encoding(&tags.v2.frames[0], version, other),
+				odid3.Error(odid3.Format_Error.Bad_Content),
+			)
+			testing.expect_value(
+				t,
+				odid3.set_encoding(&tags.v2, .UTF16, odid3.Byte_Order.Big_Endian),
+				nil,
+			)
+			latin1 := read(t, encoded)
+			defer odid3.destroy(&latin1)
+			big := read(t, ordered)
+			defer odid3.destroy(&big)
+			results := []struct {
+				tag:   ^odid3.Tag,
+				title: string,
+			} {
+				{&tags.v2, "\x01\xFE\xFF\x00T"},
+				{&latin1.v2, "\x00T"},
+				{&big.v2, "\x01\xFE\xFF\x00T"},
+			}
+			for r in results {
+				frames := r.tag.frames[:]
+				testing.expectf(
+					t,
+					len(frames) == 2 &&
+					frames[0].id == string(bad[:4]) &&
+					bytes.equal(frames[0].data, bad[10:]) &&
+					string(frames[1].data) == r.title,
+					"%q in ID3v2.%d: %d frames",
+					string(bad),
+					major,
+					len(frames),
+				)
+			}
+		}
+	}
+
+	picture := frame22("PIC", text("\x00PN"))
+	v22 := read(
+		t,
+		tag_file(2, 0, picture, frame22("TT2", concat({1}, utf16("T", .Little_Endian)))),
+	)
+	defer odid3.destroy(&v22)
+	testing.expect_value(t, odid3.set_encoding(&v22.v2, odid3.Encoding.Latin1), nil)
+	frames := v22.v2.frames[:]
+	testing.expect(
+		t,
+		len(frames) == 2 &&
+		bytes.equal(frames[0].data, picture[6:]) &&
+		string(frames[1].data) == "\x00T",
+	)
+}
+
+@(test)
 set_encoding_allocation_failures :: proc(t: ^testing.T) {
 	for name in ([]string{"v23_cover.mp3", "v24_unicode.mp3", "v24_chapters.mp3"}) {
 		succeeded := false
