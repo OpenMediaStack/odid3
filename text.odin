@@ -78,8 +78,6 @@ decode_text :: proc(
 	return decode_latin1(data, allocator)
 }
 
-// UTF-16 text starts with a byte order mark, FF FE for little endian or FE FF for big endian.
-// Without one, UTF-16BE is big endian and UTF-16 is taken as little endian, as most writers use.
 // An unpaired surrogate becomes U+FFFD, an odd last byte is dropped.
 @(private)
 decode_utf16 :: proc(
@@ -92,17 +90,10 @@ decode_utf16 :: proc(
 ) {
 	data := data
 	big_endian := big_endian
-	if len(data) >= 2 {
-		switch {
-		case data[0] == 0xFF && data[1] == 0xFE:
-			big_endian, data = false, data[2:]
-		case data[0] == 0xFE && data[1] == 0xFF:
-			big_endian, data = true, data[2:]
-		}
-	}
+	data, big_endian = after_byte_order_mark(data, big_endian)
 	size := 0
 	for i := 0; i + 1 < len(data); {
-		r := next_utf16_rune(data, &i, big_endian)
+		r, _ := next_utf16_rune(data, &i, big_endian)
 		if r != BYTE_ORDER_MARK {
 			size += utf8.rune_size(r)
 		}
@@ -113,7 +104,7 @@ decode_utf16 :: proc(
 	out := make([]u8, size, allocator) or_return
 	at := 0
 	for i := 0; i + 1 < len(data); {
-		r := next_utf16_rune(data, &i, big_endian)
+		r, _ := next_utf16_rune(data, &i, big_endian)
 		if r != BYTE_ORDER_MARK {
 			bytes, n := utf8.encode_rune(r)
 			copy(out[at:], bytes[:n])
@@ -123,19 +114,41 @@ decode_utf16 :: proc(
 	return string(out), nil
 }
 
+// UTF-16 text starts with a byte order mark, FF FE for little endian or FE FF for big endian.
+// Without one, UTF-16BE is big endian and UTF-16 is taken as little endian, as most writers use.
+@(private)
+after_byte_order_mark :: proc(
+	data: []u8,
+	big_endian: bool,
+) -> (
+	text: []u8,
+	text_big_endian: bool,
+) {
+	if len(data) >= 2 {
+		switch {
+		case data[0] == 0xFF && data[1] == 0xFE:
+			return data[2:], false
+		case data[0] == 0xFE && data[1] == 0xFF:
+			return data[2:], true
+		}
+	}
+	return data, big_endian
+}
+
 // Some writers repeat the byte order mark inside the text; it is dropped there too.
 @(private)
 BYTE_ORDER_MARK :: rune(0xFEFF)
 
+// ok is false for a surrogate without its pair, which reads as U+FFFD.
 @(private)
-next_utf16_rune :: proc(data: []u8, i: ^int, big_endian: bool) -> rune {
+next_utf16_rune :: proc(data: []u8, i: ^int, big_endian: bool) -> (r: rune, ok: bool) {
 	unit :: proc(data: []u8, at: int, big_endian: bool) -> rune {
 		if big_endian {
 			return rune(data[at]) << 8 | rune(data[at + 1])
 		}
 		return rune(data[at + 1]) << 8 | rune(data[at])
 	}
-	r := unit(data, i^, big_endian)
+	r = unit(data, i^, big_endian)
 	i^ += 2
 	switch {
 	case r >= 0xD800 && r < 0xDC00:
@@ -143,14 +156,30 @@ next_utf16_rune :: proc(data: []u8, i: ^int, big_endian: bool) -> rune {
 			low := unit(data, i^, big_endian)
 			if low >= 0xDC00 && low < 0xE000 {
 				i^ += 2
-				return utf16.decode_surrogate_pair(r, low)
+				return utf16.decode_surrogate_pair(r, low), true
 			}
 		}
-		return utf8.RUNE_ERROR
+		return utf8.RUNE_ERROR, false
 	case r >= 0xDC00 && r < 0xE000:
-		return utf8.RUNE_ERROR
+		return utf8.RUNE_ERROR, false
 	}
-	return r
+	return r, true
+}
+
+// Whether text, read as decode_text reads it, holds no UTF-16 surrogate without its pair. Decoding
+// gives U+FFFD for one, which cannot be told from a real U+FFFD once decoded.
+@(private)
+surrogates_paired :: proc(encoding: Encoding, data: []u8) -> bool {
+	if encoding != .UTF16 && encoding != .UTF16BE {
+		return true
+	}
+	text, big_endian := after_byte_order_mark(data, encoding == .UTF16BE)
+	for i := 0; i + 1 < len(text); {
+		if _, ok := next_utf16_rune(text, &i, big_endian); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // The text before the first terminator of data in an encoding (a NUL, or two aligned NULs in
