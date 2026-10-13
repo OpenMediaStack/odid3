@@ -412,8 +412,8 @@ values_set_cannot_hold :: proc(t: ^testing.T) {
 		odid3.Error(odid3.Format_Error.Not_In_Version),
 	)
 	// A MIME type of 3 Latin-1 characters is the image format itself; "éG" is 3 bytes in UTF-8,
-	// but 2 characters.
-	for mime in ([]string{"éG", "J€G", "JPEG"}) {
+	// but 2 characters, and "J\xE9G" is not UTF-8.
+	for mime in ([]string{"éG", "J€G", "JPEG", "J\xE9G"}) {
 		odd := webp
 		odd.mime = mime
 		testing.expect_value(

@@ -721,9 +721,9 @@ undecodable_layouts_keep_their_bytes :: proc(t: ^testing.T) {
 reencoded_pictures_keep_their_image_format :: proc(t: ^testing.T) {
 	// A PIC's image format odid3 has no MIME type for is read as 3 Latin-1 characters and written
 	// back so when the picture is re-encoded, rather than refused and the whole tag with it.
-	format := []u8{'J', 0xE9, 'G', 3}
+	format := []u8{'J', 0xE9, 'G'}
 	image := []u8{0, 0, 0xFF, 0xD8}
-	picture := frame22("PIC", concat({1}, format, utf16("d", .Little_Endian), image))
+	picture := frame22("PIC", concat({1}, format, {3}, utf16("d", .Little_Endian), image))
 	title := frame22("TT2", concat({1}, utf16("T", .Little_Endian)))
 	tags := read(t, tag_file(2, 0, picture, title))
 	defer odid3.destroy(&tags)
@@ -739,7 +739,7 @@ reencoded_pictures_keep_their_image_format :: proc(t: ^testing.T) {
 		t,
 		&big.v2,
 		{
-			string(concat({1}, format, utf16("d", .Big_Endian), image)),
+			string(concat({1}, format, {3}, utf16("d", .Big_Endian), image)),
 			string(concat({1}, utf16("T", .Big_Endian))),
 		},
 	)
@@ -747,7 +747,7 @@ reencoded_pictures_keep_their_image_format :: proc(t: ^testing.T) {
 	testing.expect_value(t, encoding_err, nil)
 	latin1 := read(t, encoded)
 	defer odid3.destroy(&latin1)
-	in_latin1 := []string{string(concat({0}, format, text("d\x00\xFF\xD8"))), "\x00T"}
+	in_latin1 := []string{string(concat({0}, format, text("\x03d\x00\xFF\xD8"))), "\x00T"}
 	expect_frames(t, &latin1.v2, in_latin1)
 	testing.expect_value(t, odid3.set_encoding(&tags.v2, odid3.Encoding.Latin1), nil)
 	expect_frames(t, &tags.v2, in_latin1)
@@ -759,7 +759,7 @@ reencoded_pictures_keep_their_image_format :: proc(t: ^testing.T) {
 	testing.expect_value(
 		t,
 		string(tags.v2.frames[0].data),
-		string(concat({1}, format, utf16("d", .Big_Endian), image)),
+		string(concat({1}, format, {3}, utf16("d", .Big_Endian), image)),
 	)
 }
 
