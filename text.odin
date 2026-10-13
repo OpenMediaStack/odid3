@@ -173,13 +173,21 @@ split_terminated :: proc(encoding: Encoding, data: []u8) -> (text, rest: []u8, t
 	return data, nil, false
 }
 
-// Appends s in an encoding: Latin-1 (false when s holds a character outside it), UTF-16 little
-// endian after its byte order mark, UTF-16 big endian, or UTF-8.
+// The order of the bytes of UTF-16 text with a byte order mark (.UTF16): the spec allows both, the
+// mark says which.
+Byte_Order :: enum u8 {
+	Little_Endian,
+	Big_Endian,
+}
+
+// Appends s in an encoding: Latin-1 (false when s holds a character outside it), UTF-16 in order
+// after its byte order mark, UTF-16 big endian, or UTF-8.
 @(private)
 append_encoded :: proc(
 	out: ^[dynamic]u8,
 	encoding: Encoding,
 	s: string,
+	order := Byte_Order.Little_Endian,
 ) -> (
 	ok: bool,
 	err: runtime.Allocator_Error,
@@ -193,9 +201,9 @@ append_encoded :: proc(
 			append(out, u8(r)) or_return
 		}
 	case .UTF16, .UTF16BE:
-		big_endian := encoding == .UTF16BE
-		if !big_endian {
-			append(out, 0xFF, 0xFE) or_return
+		big_endian := encoding == .UTF16BE || order == .Big_Endian
+		if encoding == .UTF16 {
+			append_utf16_unit(out, BYTE_ORDER_MARK, big_endian) or_return
 		}
 		for r in s {
 			c := r if r != utf8.RUNE_ERROR && r <= 0x10FFFF else 0xFFFD

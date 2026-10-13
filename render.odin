@@ -25,6 +25,12 @@ Write_Options :: struct {
 	// encoding the version lacks gives Encoding_Not_In_Version, text it cannot hold Not_Encodable,
 	// text that would not survive Bad_Content, and nothing is written.
 	encoding:          Maybe(Encoding),
+	// The byte order of UTF-16 text with a byte order mark (.UTF16), in every text frame that holds
+	// it once encoding applies; nil keeps each frame's, and writes frames encoding re-encodes
+	// little endian. A frame already in the order is left as it is; the others are re-encoded on a
+	// copy as set_encoding does, with the same exceptions (SYLT, GEOB, USER, OWNE, COMR, IPLS and
+	// encrypted frames keep theirs) and errors (Bad_Content for text that would not survive).
+	utf16_byte_order:  Maybe(Byte_Order),
 	// The text encoding of ID3v1; nil keeps that of tags.v1 (UTF-8 when its text was read as
 	// UTF-8). sync_v1 and v1_from_tag do not see it: give them the same encoding to know what
 	// does not fit.
@@ -69,15 +75,16 @@ render :: proc(
 	if .Compression in tag.flags && !options.replace_damaged {
 		return nil, .Incomplete_Tag
 	}
-	if encoding, forced := options.encoding.?; forced {
-		if !encoding_holds(encoding, tag.version) {
+	if options.encoding != nil || options.utf16_byte_order != nil {
+		if encoding, forced := options.encoding.?;
+		   forced && !encoding_holds(encoding, tag.version) {
 			return nil, .Encoding_Not_In_Version
 		}
 		work := clone_tag(tag, allocator) or_return
 		defer destroy_tag(&work)
-		set_tag_encoding(&work, encoding) or_return
+		reencode_tag(&work, options.encoding, options.utf16_byte_order) or_return
 		as_set := options
-		as_set.encoding = nil
+		as_set.encoding, as_set.utf16_byte_order = nil, nil
 		return render(&work, as_set, allocator)
 	}
 	forced: Frame_Format

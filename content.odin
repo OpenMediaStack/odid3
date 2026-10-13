@@ -1,6 +1,7 @@
 package odid3
 
 import "base:runtime"
+import "core:bytes"
 import "core:strings"
 import "core:unicode/utf8"
 
@@ -329,6 +330,52 @@ decode_values :: proc(
 	return
 }
 
+// The byte order of a UTF-16 frame's text as decoding reads it: that of its first string's byte
+// order mark, little endian without one, followed by the strings after it without a mark. mixed
+// is true when a later string's mark says otherwise; known is false for a layout odid3 does not
+// decode.
+@(private)
+utf16_order_of :: proc(f: ^Frame) -> (order: Byte_Order, mixed, known: bool) {
+	text: []u8
+	only_first := false
+	switch f.id {
+	case "COMM", "COM", "USLT", "ULT":
+		text = f.data[min(4, len(f.data)):]
+	case "APIC":
+		nul := bytes.index_byte(f.data[1:], 0)
+		text = f.data[min(nul + 3, len(f.data)):] if nul >= 0 else nil
+		only_first = true
+	case "PIC":
+		text, only_first = f.data[min(5, len(f.data)):], true
+	case "WXXX", "WXX":
+		text, only_first = f.data[1:], true
+	case:
+		if len(f.id) == 0 || f.id[0] != 'T' && !is_itunes_text_frame(f.id) {
+			return .Little_Endian, false, false
+		}
+		text = f.data[1:]
+	}
+	for rest, first := text, true; len(rest) > 0; first = false {
+		s: []u8
+		s, rest, _ = split_terminated(.UTF16, rest)
+		mark: Maybe(Byte_Order)
+		if len(s) >= 2 && s[0] == 0xFE && s[1] == 0xFF {
+			mark = .Big_Endian
+		} else if len(s) >= 2 && s[0] == 0xFF && s[1] == 0xFE {
+			mark = .Little_Endian
+		}
+		if first {
+			order = mark.? or_else .Little_Endian
+			if only_first {
+				break
+			}
+		} else if m, marked := mark.?; marked && m != order {
+			mixed = true
+		}
+	}
+	return order, mixed, true
+}
+
 // ID3v2.4, section 4: all the UTF-16 strings of a frame share one byte order, so a string
 // without a byte order mark follows the order of the first one. Decoding a string as UTF16BE
 // still honours its own byte order mark.
@@ -637,12 +684,27 @@ big_endian_counter :: proc(b: []u8) -> (n: u64) {
 // A new frame holding content in the layout of a tag of the given version, owned by allocator. Text
 // that its encoding cannot hold gives .Not_Encodable, an encoding the version does not have
 // .Encoding_Not_In_Version, an ID of the wrong length .Bad_Frame_Id. Before ID3v2.4, several values
-// are joined with "/", as mutagen does.
+// are joined with "/", as mutagen does. UTF-16 is written little endian after its byte order mark;
+// set_encoding gives a frame the other order.
 encode_frame :: proc(
 	content: Frame_Content,
 	id: string,
 	version: V2_Version,
 	allocator := context.allocator,
+) -> (
+	frame: Frame,
+	err: Error,
+) {
+	return encode_frame_in(content, id, version, .Little_Endian, allocator)
+}
+
+@(private)
+encode_frame_in :: proc(
+	content: Frame_Content,
+	id: string,
+	version: V2_Version,
+	order: Byte_Order,
+	allocator: runtime.Allocator,
 ) -> (
 	frame: Frame,
 	err: Error,
@@ -660,23 +722,23 @@ encode_frame :: proc(
 	switch c in content {
 	case Text:
 		start_text(&data, c.encoding, version) or_return
-		encode_values(&data, c.encoding, c.values, version) or_return
+		encode_values(&data, c.encoding, c.values, version, order) or_return
 	case User_Text:
 		start_text(&data, c.encoding, version) or_return
-		encode_string(&data, c.encoding, c.description, true) or_return
-		encode_values(&data, c.encoding, c.values, version) or_return
+		encode_string(&data, c.encoding, c.description, true, order) or_return
+		encode_values(&data, c.encoding, c.values, version, order) or_return
 	case Url:
 		encode_string(&data, .Latin1, c.url, false) or_return
 	case User_Url:
 		start_text(&data, c.encoding, version) or_return
-		encode_string(&data, c.encoding, c.description, true) or_return
+		encode_string(&data, c.encoding, c.description, true, order) or_return
 		encode_string(&data, .Latin1, c.url, false) or_return
 	case Comment:
 		start_text(&data, c.encoding, version) or_return
 		language := c.language
 		append(&data, ..language[:]) or_return
-		encode_string(&data, c.encoding, c.description, true) or_return
-		encode_string(&data, c.encoding, c.text, false) or_return
+		encode_string(&data, c.encoding, c.description, true, order) or_return
+		encode_string(&data, c.encoding, c.text, false, order) or_return
 	case Picture:
 		start_text(&data, c.encoding, version) or_return
 		if version == .V2_2 {
@@ -689,7 +751,7 @@ encode_frame :: proc(
 			encode_string(&data, .Latin1, c.mime, true) or_return
 		}
 		append(&data, u8(c.type)) or_return
-		encode_string(&data, c.encoding, c.description, true) or_return
+		encode_string(&data, c.encoding, c.description, true, order) or_return
 		append(&data, ..c.data) or_return
 	case Unique_File_Id:
 		encode_string(&data, .Latin1, c.owner, true) or_return
@@ -773,8 +835,9 @@ encode_string :: proc(
 	encoding: Encoding,
 	s: string,
 	terminated: bool,
+	order := Byte_Order.Little_Endian,
 ) -> Error {
-	ok := append_encoded(data, encoding, s) or_return
+	ok := append_encoded(data, encoding, s, order) or_return
 	if !ok {
 		return .Not_Encodable
 	}
@@ -790,17 +853,18 @@ encode_values :: proc(
 	encoding: Encoding,
 	values: []string,
 	version: V2_Version,
+	order: Byte_Order,
 ) -> Error {
 	if version != .V2_4 && len(values) > 1 {
 		joined := strings.join(values, "/", data.allocator) or_return
 		defer delete(joined, data.allocator)
-		return encode_string(data, encoding, joined, false)
+		return encode_string(data, encoding, joined, false, order)
 	}
 	for value, i in values {
 		if i > 0 {
 			append_terminator(data, encoding) or_return
 		}
-		encode_string(data, encoding, value, false) or_return
+		encode_string(data, encoding, value, false, order) or_return
 	}
 	return nil
 }
@@ -844,7 +908,10 @@ v22_image_format :: proc(mime: string) -> string {
 // Text the encoding cannot hold gives .Not_Encodable and changes nothing, an encoding the version
 // lacks .Encoding_Not_In_Version. A frame already in the encoding is left as it is. Text that would
 // not survive (characters after a comment's end, UTF-16 that is not valid) gives .Bad_Content
-// rather than being changed; before ID3v2.4, several values are joined with "/".
+// rather than being changed; before ID3v2.4, several values are joined with "/". UTF-16 with a
+// byte order mark is written in byte_order, and a frame already in the encoding but in the other
+// order is re-encoded; nil keeps the order of a frame already in UTF-16 and writes the others
+// little endian.
 set_encoding :: proc {
 	set_frame_encoding,
 	set_tag_encoding,
@@ -853,11 +920,16 @@ set_encoding :: proc {
 // See set_encoding; version is the version of the frame's tag. A frame whose data is not its
 // content gives .Not_Decodable, as does one whose layout odid3 does not decode (SYLT, GEOB, USER,
 // OWNE, COMR, IPLS). The new data is allocated with the frame's allocator.
-set_frame_encoding :: proc(frame: ^Frame, version: V2_Version, encoding: Encoding) -> Error {
+set_frame_encoding :: proc(
+	frame: ^Frame,
+	version: V2_Version,
+	encoding: Encoding,
+	byte_order: Maybe(Byte_Order) = nil,
+) -> Error {
 	if !encoding_holds(encoding, version) {
 		return .Encoding_Not_In_Version
 	}
-	replacement, changed, undecoded := reencoded(frame, version, encoding) or_return
+	replacement, changed, undecoded := reencoded(frame, version, encoding, byte_order) or_return
 	if undecoded {
 		return .Not_Decodable
 	}
@@ -870,7 +942,11 @@ set_frame_encoding :: proc(frame: ^Frame, version: V2_Version, encoding: Encodin
 
 // See set_encoding. Every frame changes, or none; the frames set_frame_encoding refuses as
 // .Not_Decodable, empty ones and those with an unknown encoding byte are left as they are.
-set_tag_encoding :: proc(tag: ^Tag, encoding: Encoding) -> Error {
+set_tag_encoding :: proc(
+	tag: ^Tag,
+	encoding: Encoding,
+	byte_order: Maybe(Byte_Order) = nil,
+) -> Error {
 	adopt_context_allocator(tag)
 	if tag.version == .None {
 		return .No_Version
@@ -878,6 +954,12 @@ set_tag_encoding :: proc(tag: ^Tag, encoding: Encoding) -> Error {
 	if !encoding_holds(encoding, tag.version) {
 		return .Encoding_Not_In_Version
 	}
+	return reencode_tag(tag, encoding, byte_order)
+}
+
+// set_tag_encoding, where a nil encoding keeps each frame's.
+@(private)
+reencode_tag :: proc(tag: ^Tag, encoding: Maybe(Encoding), order: Maybe(Byte_Order)) -> Error {
 	replacements := make([dynamic]Frame, len(tag.frames), tag.allocator) or_return
 	defer {
 		for &r in replacements {
@@ -885,7 +967,13 @@ set_tag_encoding :: proc(tag: ^Tag, encoding: Encoding) -> Error {
 		}
 		delete(replacements)
 	}
-	changed := reencode_frames(tag.frames[:], tag.version, encoding, replacements[:]) or_return
+	changed := reencode_frames(
+		tag.frames[:],
+		tag.version,
+		encoding,
+		order,
+		replacements[:],
+	) or_return
 	if !changed {
 		return nil
 	}
@@ -905,7 +993,8 @@ set_tag_encoding :: proc(tag: ^Tag, encoding: Encoding) -> Error {
 reencode_frames :: proc(
 	frames: []Frame,
 	version: V2_Version,
-	encoding: Encoding,
+	encoding: Maybe(Encoding),
+	order: Maybe(Byte_Order),
 	replacements: []Frame,
 ) -> (
 	changed: bool,
@@ -915,9 +1004,9 @@ reencode_frames :: proc(
 		replacement: Frame
 		frame_changed: bool
 		if f.id == "CHAP" || f.id == "CTOC" {
-			replacement, frame_changed = reencoded_chapter(&f, version, encoding) or_return
+			replacement, frame_changed = reencoded_chapter(&f, version, encoding, order) or_return
 		} else {
-			replacement, frame_changed, _ = reencoded(&f, version, encoding) or_return
+			replacement, frame_changed, _ = reencoded(&f, version, encoding, order) or_return
 		}
 		if frame_changed {
 			replacements[i] = replacement
@@ -932,7 +1021,8 @@ reencode_frames :: proc(
 reencoded_chapter :: proc(
 	f: ^Frame,
 	version: V2_Version,
-	encoding: Encoding,
+	encoding: Maybe(Encoding),
+	order: Maybe(Byte_Order),
 ) -> (
 	replacement: Frame,
 	changed: bool,
@@ -959,7 +1049,7 @@ reencoded_chapter :: proc(
 		}
 		delete(inner, f.allocator)
 	}
-	if !(reencode_frames(frames[:], version, encoding, inner) or_return) {
+	if !(reencode_frames(frames[:], version, encoding, order, inner) or_return) {
 		return {}, false, nil
 	}
 	for &r, i in inner {
@@ -986,25 +1076,37 @@ keep_identity :: proc(replacement, f: ^Frame) {
 	replacement.stored_flags = f.stored_flags
 }
 
-// The frame with its text in another encoding. changed is false for a frame without text, an
-// empty one, one with an unknown encoding byte, one whose data is not its content, and one
-// already in the encoding; undecoded tells set_frame_encoding about a frame with text odid3 does
-// not decode.
+// The frame with its text in another encoding (nil keeps its own), UTF-16 with a byte order mark
+// in order. changed is false for a frame without text, an empty one, one with an unknown encoding
+// byte, one whose data is not its content, and one already in the encoding and order; undecoded
+// tells set_frame_encoding about a frame with text odid3 does not decode.
 @(private)
 reencoded :: proc(
 	f: ^Frame,
 	version: V2_Version,
-	encoding: Encoding,
+	asked: Maybe(Encoding),
+	order: Maybe(Byte_Order),
 ) -> (
 	replacement: Frame,
 	changed, undecoded: bool,
 	err: Error,
 ) {
-	if !has_encoding_byte(f.id) || len(f.data) == 0 || f.data[0] == u8(encoding) {
+	if !has_encoding_byte(f.id) || len(f.data) == 0 {
 		return
 	}
 	if is_stored(f) || f.problem == .Skipped_Picture {
 		return {}, false, true, nil
+	}
+	encoding := asked.? or_else Encoding(f.data[0])
+	if f.data[0] == u8(encoding) {
+		wanted, ordered := order.?
+		if !ordered || encoding != .UTF16 {
+			return
+		}
+		current, mixed, known := utf16_order_of(f)
+		if known && !mixed && current == wanted {
+			return
+		}
 	}
 	if _, known := encoding_of(f.data[0]); !known {
 		return
@@ -1037,7 +1139,17 @@ reencoded :: proc(
 	case Binary:
 		return {}, false, true, nil
 	}
-	replacement = encode_frame(content, f.id, version, f.allocator) or_return
+	replacement = encode_frame_in(
+		content,
+		f.id,
+		version,
+		order.? or_else .Little_Endian,
+		f.allocator,
+	) or_return
+	if f.data[0] == u8(encoding) && bytes.equal(replacement.data, f.data) {
+		destroy_frame(&replacement)
+		return {}, false, false, nil
+	}
 	keep_identity(&replacement, f)
 	return replacement, true, false, nil
 }
