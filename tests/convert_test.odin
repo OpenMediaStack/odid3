@@ -96,20 +96,15 @@ text_is_reencoded_for_v23 :: proc(t: ^testing.T) {
 	testing.expect_value(t, tag_field(&several.v2, .Artist), "Ada/Bea")
 }
 
+expect_frames :: proc(t: ^testing.T, tag: ^odid3.Tag, want: []string, loc := #caller_location) {
+	testing.expect_value(t, len(tag.frames), len(want), loc = loc)
+	for f, i in tag.frames[:min(len(tag.frames), len(want))] {
+		testing.expectf(t, string(f.data) == want[i], "%s: %x", f.id, f.data, loc = loc)
+	}
+}
+
 @(test)
 text_a_conversion_carries_in_part :: proc(t: ^testing.T) {
-	expect_frames :: proc(
-		t: ^testing.T,
-		tag: ^odid3.Tag,
-		want: []string,
-		loc := #caller_location,
-	) {
-		testing.expect_value(t, len(tag.frames), len(want), loc = loc)
-		for f, i in tag.frames[:min(len(tag.frames), len(want))] {
-			testing.expectf(t, string(f.data) == want[i], "%s: %x", f.id, f.data, loc = loc)
-		}
-	}
-
 	// Re-encoded for ID3v2.3, bytes after a URL or a comment and a surrogate without its pair
 	// (D8 00 in UTF-16BE, 00 D8 after a little endian byte order mark) cannot be carried: the
 	// frames are kept without them, the surrogate as U+FFFD, and listed.
@@ -188,6 +183,144 @@ text_a_conversion_carries_in_part :: proc(t: ^testing.T) {
 	defer odid3.destroy(&v22)
 	expect_dropped(t, convert(t, &v22.v2, .V2_2), {{"COMM", .Partly_Converted}})
 	expect_frames(t, &v22.v2, {"\x00engd\x00text"})
+}
+
+@(test)
+rebuilt_frames_carry_text_in_part :: proc(t: ^testing.T) {
+	// ID3v2.4, section 4: a UTF-16 string without a byte order mark follows the order of the
+	// first one, here big endian.
+	big := read(t, tag_file(4, 0, frame(4, "TIPL", {1, 0xFE, 0xFF, 0, 'p', 0, 0, 0, 'A', 0, 0})))
+	defer odid3.destroy(&big)
+	expect_dropped(t, convert(t, &big.v2, .V2_3), {})
+	expect_frames(t, &big.v2, {"\x01\xFE\xFF\x00p\x00\x00\xFE\xFF\x00A\x00\x00"})
+
+	// People, the original year, the year and picture descriptions are decoded and encoded again:
+	// a surrogate without its pair (00 D8 after a little endian byte order mark) becomes U+FFFD
+	// and the frame is listed, a real U+FFFD (FD FF) is carried as it is.
+	lone := []u8{0xFF, 0xFE, 0x00, 0xD8}
+	real := []u8{0xFF, 0xFE, 0xFD, 0xFF}
+	cases := []struct {
+		major:   u8,
+		frame:   []u8,
+		to:      odid3.V2_Version,
+		dropped: string,
+		want:    string,
+	} {
+		{
+			3,
+			frame(3, "IPLS", concat({1, 0xFF, 0xFE, 'p', 0, 0, 0}, lone, {0, 0})),
+			.V2_4,
+			"IPLS",
+			"\x01\xFF\xFEp\x00\x00\x00\xFF\xFE\xFD\xFF\x00\x00",
+		},
+		{
+			3,
+			frame(3, "IPLS", concat({1, 0xFF, 0xFE, 'p', 0, 0, 0}, real, {0, 0})),
+			.V2_4,
+			"",
+			"\x01\xFF\xFEp\x00\x00\x00\xFF\xFE\xFD\xFF\x00\x00",
+		},
+		{
+			4,
+			concat(
+				frame(4, "TIPL", text("\x00a\x00b\x00")),
+				frame(4, "TMCL", concat({1, 0xFF, 0xFE, 'p', 0, 0, 0}, lone, {0, 0})),
+			),
+			.V2_3,
+			"TMCL",
+			"\x01\xFF\xFEa\x00\x00\x00\xFF\xFEb\x00\x00\x00\xFF\xFEp\x00\x00\x00\xFF\xFE\xFD\xFF\x00\x00",
+		},
+		{
+			3,
+			frame(3, "TORY", concat({1}, lone[:2], {'1', 0, '9', 0}, lone[2:], {'9', 0})),
+			.V2_4,
+			"TORY",
+			"\x01\xFF\xFE1\x009\x00\xFD\xFF9\x00",
+		},
+		{
+			3,
+			frame(3, "TORY", concat({1}, real[:2], {'1', 0, '9', 0}, real[2:], {'9', 0})),
+			.V2_4,
+			"",
+			"\x01\xFF\xFE1\x009\x00\xFD\xFF9\x00",
+		},
+		{3, frame(3, "TYER", concat({1}, lone)), .V2_4, "TYER", "\x01\xFF\xFE\xFD\xFF"},
+		{3, frame(3, "TYER", concat({1}, real)), .V2_4, "", "\x01\xFF\xFE\xFD\xFF"},
+		{
+			3,
+			frame(3, "APIC", concat(text("\x01image/jpeg\x00\x03"), lone, {0, 0, 0xFF, 0xD8})),
+			.V2_2,
+			"APIC",
+			"\x01JPG\x03\xFF\xFE\xFD\xFF\x00\x00\xFF\xD8",
+		},
+		{
+			4,
+			frame(4, "APIC", concat(text("\x01image/jpeg\x00\x03"), lone, {0, 0, 0xFF, 0xD8})),
+			.V2_2,
+			"APIC",
+			"\x01JPG\x03\xFF\xFE\xFD\xFF\x00\x00\xFF\xD8",
+		},
+		{
+			3,
+			frame(3, "APIC", concat(text("\x01image/jpeg\x00\x03"), real, {0, 0, 0xFF, 0xD8})),
+			.V2_2,
+			"",
+			"\x01JPG\x03\xFF\xFE\xFD\xFF\x00\x00\xFF\xD8",
+		},
+		{
+			2,
+			frame22("PIC", concat(text("\x01JPG\x03"), lone, {0, 0, 0xFF, 0xD8})),
+			.V2_3,
+			"PIC",
+			"\x01image/jpeg\x00\x03\xFF\xFE\xFD\xFF\x00\x00\xFF\xD8",
+		},
+		{
+			2,
+			frame22("PIC", concat(text("\x01JPG\x03"), real, {0, 0, 0xFF, 0xD8})),
+			.V2_3,
+			"",
+			"\x01image/jpeg\x00\x03\xFF\xFE\xFD\xFF\x00\x00\xFF\xD8",
+		},
+	}
+	for c in cases {
+		tags := read(t, tag_file(c.major, 0, c.frame))
+		defer odid3.destroy(&tags)
+		dropped := convert(t, &tags.v2, c.to)
+		want := []odid3.Dropped_Frame{} if c.dropped == "" else {{c.dropped, .Partly_Converted}}
+		expect_dropped(t, dropped, want)
+		expect_frames(t, &tags.v2, {c.want})
+	}
+
+	for c in cases {
+		succeeded := false
+		for budget in 0 ..< 40 {
+			failing := Failing{context.allocator, 1 << 30}
+			allocator := failing_allocator(&failing)
+			tags, read_err := odid3.read_bytes(tag_file(c.major, 0, c.frame), {}, allocator)
+			testing.expect_value(t, read_err, nil)
+			before := frames_snapshot(&tags.v2)
+			failing.left = budget
+			dropped, err := odid3.convert(&tags.v2, c.to, allocator)
+			failing.left = 1 << 30
+			odid3.destroy(&dropped, allocator)
+			if err == nil {
+				succeeded = true
+			} else {
+				testing.expectf(
+					t,
+					frames_snapshot(&tags.v2) == before,
+					"%x at %d",
+					c.frame,
+					budget,
+				)
+			}
+			odid3.destroy(&tags)
+			if succeeded {
+				break
+			}
+		}
+		testing.expectf(t, succeeded, "%x never converted", c.frame)
+	}
 }
 
 @(test)
