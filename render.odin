@@ -113,7 +113,7 @@ render :: proc(
 	}
 	rendered, unsynchronised := 0, 0
 	for &f in tag.frames {
-		if f.id == "SEEK" && tag.version == .V2_4 {
+		if is_kind(f.id, {.SEEK}) && tag.version == .V2_4 {
 			continue
 		}
 		render_frame(body, &f, tag.version, forced) or_return
@@ -232,7 +232,7 @@ render_frame :: proc(
 	}
 	unsync := version == .V2_4 && (.Unsynchronisation in forced || frame_unsynchronised(f))
 	asked := f.format
-	if f.id != "CHAP" && f.id != "CTOC" && .Encryption not_in f.format {
+	if !is_kind(f.id, {.CHAP, .CTOC}) && .Encryption not_in f.format {
 		asked += forced
 	}
 	compress := !as_stored && version != .V2_2 && .Compression in asked
@@ -374,25 +374,5 @@ has_encoding_byte :: proc(id: string) -> bool {
 	if len(id) > 0 && id[0] == 'T' || is_itunes_text_frame(id) {
 		return true
 	}
-	switch id {
-	case "COMM",
-	     "COM",
-	     "USLT",
-	     "ULT",
-	     "APIC",
-	     "PIC",
-	     "WXXX",
-	     "WXX",
-	     "SYLT",
-	     "SLT",
-	     "GEOB",
-	     "GEO",
-	     "USER",
-	     "OWNE",
-	     "COMR",
-	     "IPLS",
-	     "IPL":
-		return true
-	}
-	return false
+	return is_kind(id, {.COMM, .USLT, .APIC, .WXXX, .SYLT, .GEOB, .USER, .OWNE, .COMR, .IPLS})
 }

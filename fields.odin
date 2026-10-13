@@ -48,8 +48,8 @@ get_tag_field :: proc(
 	case .Date:
 		return tag_date(tag, allocator)
 	case .Track, .Track_Total, .Disc, .Disc_Total:
-		ids := TRACK_IDS if field == .Track || field == .Track_Total else DISC_IDS
-		pair := first_text(tag, ids, allocator) or_return
+		kind: Frame_Kind = .TRCK if field == .Track || field == .Track_Total else .TPOS
+		pair := first_text(tag, kind, allocator) or_return
 		defer delete(pair, allocator)
 		number, total := split_pair(pair)
 		return strings.clone(number if field == .Track || field == .Disc else total, allocator)
@@ -60,13 +60,13 @@ get_tag_field :: proc(
 	case .Comment:
 		return tag_comment(tag, allocator)
 	case .Title:
-		return first_text(tag, TITLE_IDS, allocator)
+		return first_text(tag, .TIT2, allocator)
 	case .Artist:
-		return first_text(tag, ARTIST_IDS, allocator)
+		return first_text(tag, .TPE1, allocator)
 	case .Album_Artist:
-		return first_text(tag, ALBUM_ARTIST_IDS, allocator)
+		return first_text(tag, .TPE2, allocator)
 	case .Album:
-		return first_text(tag, ALBUM_IDS, allocator)
+		return first_text(tag, .TALB, allocator)
 	}
 	return "", nil
 }
@@ -145,7 +145,7 @@ track :: proc {
 
 // See track.
 tag_track :: proc(tag: ^Tag) -> (number, total: int) {
-	return number_pair(tag, TRACK_IDS)
+	return number_pair(tag, .TRCK)
 }
 
 // See track.
@@ -166,7 +166,7 @@ disc :: proc {
 
 // See disc.
 tag_disc :: proc(tag: ^Tag) -> (number, total: int) {
-	return number_pair(tag, DISC_IDS)
+	return number_pair(tag, .TPOS)
 }
 
 // See disc.
@@ -184,7 +184,7 @@ genres :: proc(
 	names: []string,
 	err: runtime.Allocator_Error,
 ) #optional_allocator_error {
-	values := all_text_values(tag, GENRE_IDS, allocator) or_return
+	values := all_text_values(tag, .TCON, allocator) or_return
 	defer destroy_strings(&values, allocator)
 	out := make([dynamic]string, allocator)
 	defer if err != nil {
@@ -211,7 +211,7 @@ pictures :: proc(
 		destroy_pictures(&partial, allocator)
 	}
 	for &f in tag.frames {
-		if f.id != "APIC" && f.id != "PIC" {
+		if !is_kind(f.id, {.APIC}) {
 			continue
 		}
 		content := decode_owned(&f, tag.version, allocator) or_return
@@ -238,7 +238,7 @@ front_cover :: proc(
 	err: runtime.Allocator_Error,
 ) {
 	for &f in tag.frames {
-		if f.id != "APIC" && f.id != "PIC" {
+		if !is_kind(f.id, {.APIC}) {
 			continue
 		}
 		content, decode_err := decode_owned(&f, tag.version, allocator)
@@ -274,7 +274,7 @@ user_text :: proc(
 	err: runtime.Allocator_Error,
 ) {
 	for &f in tag.frames {
-		if f.id != "TXXX" && f.id != "TXX" {
+		if !is_kind(f.id, {.TXXX}) {
 			continue
 		}
 		content := decode_owned(&f, tag.version, allocator) or_return
@@ -303,7 +303,7 @@ comments :: proc(
 		destroy_comments(&partial, allocator)
 	}
 	for &f in tag.frames {
-		if f.id != "COMM" && f.id != "COM" {
+		if !is_kind(f.id, {.COMM}) {
 			continue
 		}
 		content := decode_owned(&f, tag.version, allocator) or_return
@@ -351,21 +351,6 @@ destroy_strings :: proc(values: ^[]string, allocator := context.allocator) {
 	values^ = nil
 }
 
-@(private, rodata)
-TITLE_IDS := []string{"TIT2", "TT2"}
-@(private, rodata)
-ARTIST_IDS := []string{"TPE1", "TP1"}
-@(private, rodata)
-ALBUM_ARTIST_IDS := []string{"TPE2", "TP2"}
-@(private, rodata)
-ALBUM_IDS := []string{"TALB", "TAL"}
-@(private, rodata)
-TRACK_IDS := []string{"TRCK", "TRK"}
-@(private, rodata)
-DISC_IDS := []string{"TPOS", "TPA"}
-@(private, rodata)
-GENRE_IDS := []string{"TCON", "TCO"}
-
 // Decodes a frame, turning every error but running out of memory into no content.
 @(private)
 decode_owned :: proc(
@@ -383,18 +368,18 @@ decode_owned :: proc(
 	return decoded, nil
 }
 
-// The values of the first text frame with one of these IDs that decodes.
+// The values of the first text frame of this kind that decodes.
 @(private)
 all_text_values :: proc(
 	tag: ^Tag,
-	ids: []string,
+	kind: Frame_Kind,
 	allocator: runtime.Allocator,
 ) -> (
 	values: []string,
 	err: runtime.Allocator_Error,
 ) {
 	for &f in tag.frames {
-		if !contains(ids, f.id) {
+		if !is_kind(f.id, {kind}) {
 			continue
 		}
 		content := decode_owned(&f, tag.version, allocator) or_return
@@ -409,25 +394,15 @@ all_text_values :: proc(
 @(private)
 first_text :: proc(
 	tag: ^Tag,
-	ids: []string,
+	kind: Frame_Kind,
 	allocator: runtime.Allocator,
 ) -> (
 	value: string,
 	err: runtime.Allocator_Error,
 ) {
-	values := all_text_values(tag, ids, allocator) or_return
+	values := all_text_values(tag, kind, allocator) or_return
 	defer destroy_strings(&values, allocator)
 	return strings.join(values, "; ", allocator)
-}
-
-@(private)
-contains :: proc(list: []string, s: string) -> bool {
-	for entry in list {
-		if entry == s {
-			return true
-		}
-	}
-	return false
 }
 
 // ID3v2.4 has one timestamp, TDRC. Before it the date was split in TYER ("2019"), TDAT ("0305",
@@ -442,18 +417,18 @@ tag_date :: proc(
 	date: string,
 	err: runtime.Allocator_Error,
 ) {
-	timestamp := first_text(tag, {"TDRC"}, allocator) or_return
+	timestamp := first_text(tag, .TDRC, allocator) or_return
 	if timestamp != "" {
 		return timestamp, nil
 	}
-	year := first_text(tag, {"TYER", "TYE"}, allocator) or_return
+	year := first_text(tag, .TYER, allocator) or_return
 	if len(year) != 4 || !is_number(year) {
 		return year, nil
 	}
 	defer delete(year, allocator)
-	day_month := first_text(tag, {"TDAT", "TDA"}, allocator) or_return
+	day_month := first_text(tag, .TDAT, allocator) or_return
 	defer delete(day_month, allocator)
-	hours := first_text(tag, {"TIME", "TIM"}, allocator) or_return
+	hours := first_text(tag, .TIME, allocator) or_return
 	defer delete(hours, allocator)
 	if !is_pair_within(day_month, 31, 12, 1) {
 		return strings.clone(year, allocator)
@@ -529,11 +504,11 @@ split_pair :: proc(s: string) -> (number, total: string) {
 }
 
 @(private)
-number_pair :: proc(tag: ^Tag, ids: []string) -> (number, total: int) {
+number_pair :: proc(tag: ^Tag, kind: Frame_Kind) -> (number, total: int) {
 	buf: [SCRATCH_SIZE]u8
 	scratch: mem.Arena
 	mem.arena_init(&scratch, buf[:])
-	pair, _ := first_text(tag, ids, mem.arena_allocator(&scratch))
+	pair, _ := first_text(tag, kind, mem.arena_allocator(&scratch))
 	a, b := split_pair(pair)
 	number, _ = parse_number(a)
 	total, _ = parse_number(b)
@@ -665,15 +640,15 @@ set :: proc(tag: ^Tag, field: Field, value: string) -> Error {
 	}
 	switch field {
 	case .Title, .Artist, .Album_Artist, .Album:
-		return set_text(tag, field_ids(field), value)
+		return set_text(tag, field_kind(field), value)
 	case .Date:
 		return set_date(tag, value)
 	case .Track, .Track_Total, .Disc, .Disc_Total:
 		if value != "" && !is_number(value) {
 			return .Bad_Value
 		}
-		ids := TRACK_IDS if field == .Track || field == .Track_Total else DISC_IDS
-		pair := first_text(tag, ids, tag.allocator) or_return
+		kind: Frame_Kind = .TRCK if field == .Track || field == .Track_Total else .TPOS
+		pair := first_text(tag, kind, tag.allocator) or_return
 		defer delete(pair, tag.allocator)
 		number, total := split_pair(pair)
 		if field == .Track || field == .Disc {
@@ -681,7 +656,7 @@ set :: proc(tag: ^Tag, field: Field, value: string) -> Error {
 		} else {
 			total = value
 		}
-		return set_pair(tag, ids, number, total)
+		return set_pair(tag, kind, number, total)
 	case .Genre:
 		if value == "" {
 			return set_genres(tag, nil)
@@ -696,12 +671,12 @@ set :: proc(tag: ^Tag, field: Field, value: string) -> Error {
 // Sets the track number and total; 0 leaves a part out, and both 0 remove the frame. A number
 // below 0 or past 999999999 gives .Bad_Value.
 set_track :: proc(tag: ^Tag, number, total: int) -> Error {
-	return set_number_pair(tag, TRACK_IDS, number, total)
+	return set_number_pair(tag, .TRCK, number, total)
 }
 
 // Sets the disc number and total, as set_track does.
 set_disc :: proc(tag: ^Tag, number, total: int) -> Error {
-	return set_number_pair(tag, DISC_IDS, number, total)
+	return set_number_pair(tag, .TPOS, number, total)
 }
 
 // Sets the genres: several values in ID3v2.4, joined with "/" before. No genre removes the frame.
@@ -715,7 +690,7 @@ set_genres :: proc(tag: ^Tag, genres: []string) -> Error {
 			return .Bad_Value
 		}
 	}
-	return set_text_values(tag, GENRE_IDS, genres)
+	return set_text_values(tag, .TCON, genres)
 }
 
 // Replaces the pictures of the same type with picture, in the place of the first, or adds it. Its
@@ -730,7 +705,7 @@ set_picture :: proc(tag: ^Tag, picture: Picture) -> Error {
 	   strings.index_byte(picture.mime, 0) >= 0 {
 		return .Bad_Value
 	}
-	id := "PIC" if tag.version == .V2_2 else "APIC"
+	id := id_in_tag(.APIC, tag.version)
 	p := picture
 	if !encoding_holds(p.encoding, tag.version, p.description) {
 		p.encoding = default_encoding(tag.version, p.description)
@@ -754,7 +729,7 @@ remove_pictures :: proc(tag: ^Tag, type: Maybe(Picture_Type) = nil) {
 	wanted, only_one_type := type.?
 	for i := len(tag.frames) - 1; i >= 0; i -= 1 {
 		f := &tag.frames[i]
-		if f.id != "APIC" && f.id != "PIC" {
+		if !is_kind(f.id, {.APIC}) {
 			continue
 		}
 		if picture_type, ok := picture_type_of(f, tag.version);
@@ -779,7 +754,7 @@ set_user_text :: proc(tag: ^Tag, description, value: string) -> Error {
 	defer delete(remove)
 	previous: Maybe(Text_Format)
 	for &f, i in tag.frames {
-		if f.id != "TXXX" && f.id != "TXX" {
+		if !is_kind(f.id, {.TXXX}) {
 			continue
 		}
 		content := decode_owned(&f, tag.version, tag.allocator) or_return
@@ -802,7 +777,7 @@ set_user_text :: proc(tag: ^Tag, description, value: string) -> Error {
 		description = description,
 		values      = {value},
 	}
-	id := "TXX" if tag.version == .V2_2 else "TXXX"
+	id := id_in_tag(.TXXX, tag.version)
 	frame := encode_frame_in(content, id, tag.version, format.order, tag.allocator) or_return
 	frame.status = format.status
 	return edit_frames(tag, remove[:], {frame})
@@ -906,11 +881,12 @@ edit_frames :: proc(tag: ^Tag, remove: []int, frames: []Frame) -> Error {
 // The type of a picture frame, read from its bytes without decoding them.
 @(private)
 picture_type_of :: proc(f: ^Frame, version: V2_Version) -> (type: Picture_Type, ok: bool) {
-	if f.id != "APIC" && f.id != "PIC" || f.problem != .None && f.problem != .Bad_Data_Length {
+	if !is_kind(f.id, {.APIC}) || f.problem != .None && f.problem != .Bad_Data_Length {
 		return
 	}
 	at := 4
-	if f.id == "APIC" {
+	// APIC holds a MIME type where ID3v2.2's PIC holds a 3 letter image format.
+	if len(f.id) == 4 {
 		if len(f.data) < 2 {
 			return
 		}
@@ -955,7 +931,7 @@ Comment_Frame :: struct {
 comment_frames :: proc(tag: ^Tag) -> (found: [dynamic]Comment_Frame, err: Error) {
 	found = make([dynamic]Comment_Frame, tag.allocator)
 	for &f, i in tag.frames {
-		if f.id != "COMM" && f.id != "COM" {
+		if !is_kind(f.id, {.COMM}) {
 			continue
 		}
 		content, decode_err := decode_owned(&f, tag.version, tag.allocator)
@@ -1013,7 +989,7 @@ comment_frame :: proc(
 	}
 	frame = encode_frame_in(
 		content,
-		"COM" if tag.version == .V2_2 else "COMM",
+		id_in_tag(.COMM, tag.version),
 		tag.version,
 		format.order,
 		tag.allocator,
@@ -1034,7 +1010,7 @@ find_user_text :: proc(
 	err: Error,
 ) {
 	for &f, i in tag.frames {
-		if f.id != "TXXX" && f.id != "TXX" {
+		if !is_kind(f.id, {.TXXX}) {
 			continue
 		}
 		content := decode_owned(&f, tag.version, tag.allocator) or_return
@@ -1092,44 +1068,34 @@ set_read_comment :: proc(tag: ^Tag, value: string) -> Error {
 	return edit_frames(tag, remove[:], {frame})
 }
 
+// The kind of the frame of a field held in one text frame: the title, artists and album.
 @(private)
-field_ids :: proc(field: Field) -> []string {
+field_kind :: proc(field: Field) -> Frame_Kind {
 	#partial switch field {
 	case .Title:
-		return TITLE_IDS
+		return .TIT2
 	case .Artist:
-		return ARTIST_IDS
+		return .TPE1
 	case .Album_Artist:
-		return ALBUM_ARTIST_IDS
+		return .TPE2
 	case .Album:
-		return ALBUM_IDS
+		return .TALB
 	}
-	return nil
-}
-
-// The ID a version uses among a field's IDs: the 4 letter one, or the 3 letter one in ID3v2.2.
-@(private)
-version_id :: proc(ids: []string, version: V2_Version) -> string {
-	for id in ids {
-		if (len(id) == 3) == (version == .V2_2) {
-			return id
-		}
-	}
-	return ids[0]
+	return .TIT2
 }
 
 @(private)
-set_text :: proc(tag: ^Tag, ids: []string, value: string) -> Error {
+set_text :: proc(tag: ^Tag, kind: Frame_Kind, value: string) -> Error {
 	if value == "" {
-		return set_text_values(tag, ids, nil)
+		return set_text_values(tag, kind, nil)
 	}
-	return set_text_values(tag, ids, {value})
+	return set_text_values(tag, kind, {value})
 }
 
 @(private)
 text_frame :: proc(
 	tag: ^Tag,
-	id: string,
+	kind: Frame_Kind,
 	values: []string,
 	previous: Maybe(Text_Format),
 ) -> (
@@ -1139,7 +1105,7 @@ text_frame :: proc(
 	format := keep_format(previous, tag.version, ..values)
 	frame = encode_frame_in(
 		Text{format.encoding, values},
-		id,
+		id_in_tag(kind, tag.version),
 		tag.version,
 		format.order,
 		tag.allocator,
@@ -1148,15 +1114,15 @@ text_frame :: proc(
 	return
 }
 
-// Replaces the frames with one of ids by a text frame holding values, in the place of the first,
-// in its format when it can; no values removes them all.
+// Replaces the frames of a kind by a text frame holding values, in the place of the first, in its
+// format when it can; no values removes them all.
 @(private)
-set_text_values :: proc(tag: ^Tag, ids: []string, values: []string) -> Error {
+set_text_values :: proc(tag: ^Tag, kind: Frame_Kind, values: []string) -> Error {
 	remove := make([dynamic]int, tag.allocator)
 	defer delete(remove)
 	previous: Maybe(Text_Format)
 	for &f, i in tag.frames {
-		if !contains(ids, f.id) {
+		if !is_kind(f.id, {kind}) {
 			continue
 		}
 		if encoding, ok := frame_encoding(&f); ok && previous == nil {
@@ -1167,28 +1133,28 @@ set_text_values :: proc(tag: ^Tag, ids: []string, values: []string) -> Error {
 	if len(values) == 0 {
 		return edit_frames(tag, remove[:], nil)
 	}
-	frame := text_frame(tag, version_id(ids, tag.version), values, previous) or_return
+	frame := text_frame(tag, kind, values, previous) or_return
 	return edit_frames(tag, remove[:], {frame})
 }
 
 @(private)
-set_pair :: proc(tag: ^Tag, ids: []string, number, total: string) -> Error {
+set_pair :: proc(tag: ^Tag, kind: Frame_Kind, number, total: string) -> Error {
 	switch {
 	case number == "" && total == "":
-		return set_text_values(tag, ids, nil)
+		return set_text_values(tag, kind, nil)
 	case total == "":
-		return set_text(tag, ids, number)
+		return set_text(tag, kind, number)
 	}
 	pair := strings.concatenate({number, "/", total}, tag.allocator) or_return
 	defer delete(pair, tag.allocator)
-	return set_text(tag, ids, pair)
+	return set_text(tag, kind, pair)
 }
 
 @(private)
 MAX_NUMBER :: 999_999_999
 
 @(private)
-set_number_pair :: proc(tag: ^Tag, ids: []string, number, total: int) -> Error {
+set_number_pair :: proc(tag: ^Tag, kind: Frame_Kind, number, total: int) -> Error {
 	adopt_context_allocator(tag)
 	if tag.version == .None {
 		return .No_Version
@@ -1199,12 +1165,24 @@ set_number_pair :: proc(tag: ^Tag, ids: []string, number, total: int) -> Error {
 	a, b: [20]u8
 	n := strconv.write_int(a[:], i64(number), 10) if number > 0 else ""
 	t := strconv.write_int(b[:], i64(total), 10) if total > 0 else ""
-	return set_pair(tag, ids, n, t)
+	return set_pair(tag, kind, n, t)
 }
 
-// Every ID a date lives in: ID3v2.4's timestamp, then the parts of ID3v2.3 and 2.2.
+// The frames a date lives in: ID3v2.4's timestamp, then the parts of ID3v2.3 and 2.2.
 @(private, rodata)
-DATE_IDS := [7]string{"TDRC", "TYER", "TDAT", "TIME", "TYE", "TDA", "TIM"}
+DATE_KINDS := [4]Frame_Kind{.TDRC, .TYER, .TDAT, .TIME}
+
+// The index in DATE_KINDS of a date frame's ID, or -1.
+@(private)
+date_part :: proc(id: string) -> int {
+	kind := kinds_of(id)
+	for date, i in DATE_KINDS {
+		if date in kind {
+			return i
+		}
+	}
+	return -1
+}
 
 // "2019-05-03T10:20" is TDRC in ID3v2.4; before, TYER "2019", TDAT "0305" (day then month) and
 // TIME "1020", or TYE, TDA and TIM in ID3v2.2.
@@ -1223,14 +1201,9 @@ set_date :: proc(tag: ^Tag, value: string) -> Error {
 	}
 	remove := make([dynamic]int, tag.allocator)
 	defer delete(remove)
-	formats: [len(DATE_IDS)]Maybe(Text_Format)
+	formats: [len(DATE_KINDS)]Maybe(Text_Format)
 	for &f, i in tag.frames {
-		k := -1
-		for id, j in DATE_IDS {
-			if f.id == id {
-				k = j
-			}
-		}
+		k := date_part(f.id)
 		if k < 0 {
 			continue
 		}
@@ -1252,21 +1225,20 @@ set_date :: proc(tag: ^Tag, value: string) -> Error {
 		texts[0] = {0, value}
 		n = 1
 	case:
-		shift := 3 if tag.version == .V2_2 else 0
-		texts[0] = {1 + shift, value[:4]}
+		texts[0] = {1, value[:4]}
 		n = 1
 		if parts >= 3 {
-			texts[1] = {2 + shift, string(day_month[:])}
+			texts[1] = {2, string(day_month[:])}
 			n = 2
 		}
 		if parts >= 5 {
-			texts[2] = {3 + shift, string(hours[:])}
+			texts[2] = {3, string(hours[:])}
 			n = 3
 		}
 	}
 	frames: [3]Frame
 	for text, k in texts[:n] {
-		frame, err := text_frame(tag, DATE_IDS[text.id], {text.value}, formats[text.id])
+		frame, err := text_frame(tag, DATE_KINDS[text.id], {text.value}, formats[text.id])
 		if err != nil {
 			for &f in frames[:k] {
 				destroy_frame(&f)

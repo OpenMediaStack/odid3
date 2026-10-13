@@ -137,13 +137,37 @@ frame_id :: proc(kind: Frame_Kind, version: V2_Version) -> (id: string, ok: bool
 // share their 4 letter IDs (a TDRC read in an ID3v2.3 tag, which that version does not have, is
 // still .TDRC). No ID has a kind in a tag of version .None.
 frame_kind :: proc(id: string, version: V2_Version) -> (kind: Frame_Kind, ok: bool) {
-	if id == "" {
-		return
-	}
-	for k in Frame_Kind {
-		if id_in_tag(k, version) == id {
-			return k, true
+	switch version {
+	case .V2_2:
+		if len(id) != 3 {
+			return
 		}
+		for ids, k in FRAME_IDS {
+			if ids.v22 == id {
+				return k, true
+			}
+		}
+	case .V2_3, .V2_4:
+		if len(id) != 4 {
+			return
+		}
+		// The kinds are in the order of their names, their 4 letter IDs but for CRM and LNK, which
+		// keep their place among them: a 4 letter ID is found by bisection.
+		low, high := 0, len(Frame_Kind)
+		for low < high {
+			middle := (low + high) / 2
+			ids := FRAME_IDS[Frame_Kind(middle)]
+			name := ids.v23 if ids.v23 != "" else ids.v24 if ids.v24 != "" else ids.v22
+			switch {
+			case id == name:
+				return Frame_Kind(middle), true
+			case id < name:
+				high = middle
+			case:
+				low = middle + 1
+			}
+		}
+	case .None:
 	}
 	return
 }
@@ -166,6 +190,40 @@ id_in_tag :: proc(kind: Frame_Kind, version: V2_Version) -> string {
 
 @(private)
 Frame_Kinds :: bit_set[Frame_Kind;u128]
+
+// The kind of a frame ID from its length alone, 3 letters being ID3v2.2's and 4 ID3v2.3's and
+// 2.4's, as a set: empty for an ID odid3 does not know.
+@(private)
+kinds_of :: proc(id: string) -> Frame_Kinds {
+	kind, ok := frame_kind(id, .V2_2 if len(id) == 3 else .V2_3)
+	return {kind} if ok else {}
+}
+
+// Whether an ID is that of one of these kinds in either form, as kinds_of would find it.
+@(private)
+is_kind :: proc(id: string, kinds: Frame_Kinds) -> bool {
+	if id == "" {
+		return false
+	}
+	for kind in kinds {
+		ids := FRAME_IDS[kind]
+		if id == ids.v22 || id == ids.v23 || id == ids.v24 {
+			return true
+		}
+	}
+	return false
+}
+
+// Whether an ID is that of one of these kinds in the form of a version, as frame_kind reads it.
+@(private)
+is_kind_in :: proc(id: string, kinds: Frame_Kinds, version: V2_Version) -> bool {
+	for kind in kinds {
+		if form := id_in_tag(kind, version); form != "" && id == form {
+			return true
+		}
+	}
+	return false
+}
 
 @(private = "file")
 Frame_Ids :: struct {
