@@ -2,7 +2,7 @@
 
 An ID3 library written in Odin, part of Open Media Stack. It reads and writes the tags of MP3 files: ID3v1, ID3v1.1 and the Enhanced TAG, ID3v2.2, ID3v2.3 and ID3v2.4. Every frame of a tag is kept, unknown ones as raw bytes, so nothing is lost on a round trip; typed accessors cover the common fields (title, artist, album, date, track, disc, genre, comment, pictures, user text); a raw frame view gives each frame's ID, offset, size, flags and decoded value. Writing is safe (a temporary file renamed over the original) and never touches the audio. Only Odin's `core:` library is used. Open source under the MIT license.
 
-Its first user is Colophon (`OpenMediaStack/colophon`, cloned in `~/Code/colophon`), the MP3 tag editor, whose Odin and SDL3 rewrite lives on the `odin-migration` branch of that repository. Colophon's needs drive this library: see [Colophon's needs](#colophons-needs).
+What it must offer callers is listed in [Needs](#needs).
 
 **Scope.** v1 reads and writes every ID3 version above, with options for the text encoding, the padding, unsynchronisation and compression. The MPEG audio stream (duration, bitrate), APE tags and Lyrics3 tags are out of scope: their bytes are found and kept, never parsed. A command line tool comes in v2, after the v1 tag (see [Roadmap](#roadmap)).
 
@@ -20,7 +20,7 @@ Florent decides, the agents build.
 - **The CI runs on every pull request**: build checks, tests, formatting and lint on macOS, Windows and Linux (see [Definition of done](#definition-of-done)).
 - **A second agent reviews every pull request.** Once a pull request is open, the agent that opened it has another agent review the diff against this file (correctness, [Rules that are never bent](#rules-that-are-never-bent), tests, code comments). The agent that opened it applies the review comments it agrees with, pushes them to the same pull request, and lists in the description the ones it set aside, with the reason.
 - **The agent merges once the CI is green.** After the review, when every check of its pull request passes, the agent that opened it squash-merges it and deletes its branch; the next slice starts from the updated `origin/main`. A pull request waiting on a question for Florent is not merged until he answers. Florent reviews the merged changes and asks for fixes, which come as new pull requests. Tagging a release is still Florent's call: pushing a `v*` tag runs `.github/workflows/release.yml`, which checks that `VERSION` in `odid3.odin` matches the tag, runs the checks and tests, and publishes the GitHub release with notes git-cliff writes from the squash-merged titles since the previous tag (`cliff.toml`). The CI shows the notes of the next release on every pull request.
-- **Start from the prototype.** `~/Code/colophon-odin/tags/` (not a git repository) already reads ID3v1, ID3v2.2, 2.3 and 2.4 and writes 2.3 and 2.4, with 25 tests and fixtures from `~/Code/colophon-odin/testdata/make.sh`. Port, restructure and extend that code rather than rewrite it from zero. Its MPEG audio code (`mpeg.odin`) stays out of odid3.
+- **The prototype.** odid3 began as a port of a prototype that read ID3v1, ID3v2.2, 2.3 and 2.4 and wrote 2.3 and 2.4, with 25 tests and the fixtures of its `make.sh`: its code was ported, restructured and extended rather than rewritten from zero. Its MPEG audio code (`mpeg.odin`) stays out of odid3.
 - **Florent keeps learning.** When a change relies on a concept that is not obvious (unsynchronisation, syncsafe integers, the data length indicator, a deflate block, a UTF-16 surrogate pair), the summary explains it in two or three sentences with a link to the spec (see [References](#references)). No lectures, just enough to review with understanding.
 - Talk to Florent in French. Everything written in the repository or on GitHub is in English: code, comments, docs, the README, commit messages, pull request titles and descriptions, review comments.
 - No em dashes or en dashes anywhere: code, comments, docs, commits, pull requests. Use a comma, a colon, parentheses or a new sentence. The CI checks it.
@@ -28,7 +28,7 @@ Florent decides, the agents build.
 ## Code style
 
 - **Names.** Types in `Ada_Case`, procedures and variables in `snake_case`, constants in `SCREAMING_SNAKE_CASE`, enum values in `Ada_Case`. Frame IDs and spec terms keep the spec's spelling (`TIT2`, `unsynchronisation`).
-- **Public and private.** Only what Colophon and the future command line tool need is public. Every helper is `@(private)` (package) or `@(private = "file")`.
+- **Public and private.** Only what callers need, the future command line tool included, is public. Every helper is `@(private)` (package) or `@(private = "file")`.
 - **Errors** are values: the package's `Error` union, propagated with `or_return`. A damaged tag is not an error: reading gives a partial result and warnings (see [Rules that are never bent](#rules-that-are-never-bent)).
 - **Allocators.** Every procedure that allocates takes `allocator := context.allocator`, and its doc comment says what the caller owns and how to free it. The library never relies on `context.temp_allocator`: scratch memory comes from the given allocator and is freed before returning.
 - **No global mutable state.** Tables (genres, frame ID conversions) are `@(rodata)` constants.
@@ -59,7 +59,7 @@ A change is done when all of this holds, and the summary says which checks ran:
 
 ## Architecture
 
-The repository root is the `odid3` package. Colophon imports it by path; the recommendation is a git submodule pinned to a tag, decided in Colophon.
+The repository root is the `odid3` package, which a program imports by path, for instance from a git submodule pinned to a tag.
 
 | Path | Role |
 | --- | --- |
@@ -87,15 +87,13 @@ The repository root is the `odid3` package. Colophon imports it by path; the rec
 
 Add a file only when a real boundary appears, never upfront. Throwaway experiments live in `spikes/`, ignored locally through `.git/info/exclude`, never committed.
 
-## Colophon's needs
+## Needs
 
-From Colophon's design brief (`docs/design/brief.md`, "Tag versions and developer mode") and its roadmap (steps 4, 5 and 11):
-
-- Write ID3v2.4 by default, or ID3v2.3 when the settings say so.
+- Write ID3v2.4 by default, or ID3v2.3 when the caller asks.
 - ID3v1: keep it where it exists (rewritten from the new values), always write it, or never write it. Report the values that do not fit (30 Latin-1 characters, 28 for the comment of an ID3v1.1 tag) before saving.
-- Developer mode writes any version on demand to produce test files: ID3v2 none, 2.2, 2.3 or 2.4; ID3v1 none, 1.0 or 1.1. A conversion says what it will lose.
-- Advanced developer tools set the text encoding of each frame (ISO-8859-1, UTF-16 and, in ID3v2.4, UTF-16BE and UTF-8), the padding size, unsynchronisation and compression, and show a raw frame view: each frame's ID, offset, size, flags and decoded value.
-- Reading many files from worker threads, without loading whole files.
+- Write any version on demand, to produce test files for instance: ID3v2 none, 2.2, 2.3 or 2.4; ID3v1 none, 1.0 or 1.1. A conversion says what it will lose.
+- Set the text encoding of each frame (ISO-8859-1, UTF-16 and, in ID3v2.4, UTF-16BE and UTF-8), the padding size, unsynchronisation and compression, and give a raw frame view: each frame's ID, offset, size, flags and decoded value.
+- Read many files from worker threads, without loading whole files.
 
 ## References
 
@@ -164,7 +162,7 @@ Each slice already tests its own damaged inputs; the last one adds the systemati
 ### 3. The v1 tag
 
 1. **`docs: usage and API reference`**: the README with examples for reading, editing and writing, `docs/api.md` replaced by a pointer to `odin doc`, and every public declaration documented.
-2. **`chore: version 1.0.0`**, then the `v1.0.0` tag once Florent approves it. Colophon then pins it.
+2. **`chore: version 1.0.0`**, then the `v1.0.0` tag once Florent approves it.
 
 ### 4. v2, after the v1 tag
 
@@ -179,11 +177,11 @@ Nothing of this starts before the v1 tag. The shape to propose when the time com
 
 Florent's answers to the questions the plan raised:
 
-1. **Compressed frames on write** use a small deflate encoder of our own in `deflate.odin`, rather than `vendor:zlib`: the library stays free of C, its allocations go through Odin's allocators (so the test runner sees them), and it keeps compiling for targets without a C zlib, such as a future web build of Colophon.
-2. **The MPEG audio code** of the prototype (duration, bitrate, Xing and VBRI headers) goes into a package inside Colophon, fed by odid3's `Layout` (which says where the audio starts and ends). It moves to its own library only if another Odin program needs it.
+1. **Compressed frames on write** use a small deflate encoder of our own in `deflate.odin`, rather than `vendor:zlib`: the library stays free of C, its allocations go through Odin's allocators (so the test runner sees them), and it keeps compiling for targets without a C zlib, such as a web build.
+2. **The MPEG audio code** of the prototype (duration, bitrate, Xing and VBRI headers) goes into the program that needs it, fed by odid3's `Layout` (which says where the audio starts and ends). It moves to its own library only if a second Odin program needs it.
 3. **Two ID3v2 tags in one file** (a leading tag and an appended one, or two leading tags left by a broken tagger): the first is read, the other is reported as a warning, and writing puts a single leading tag in place of both. This departs from section 5 of the ID3v2.4 structure, where a later tag updates the earlier one; TagLib, mutagen and ffmpeg do not read appended tags at all.
-4. **The extended header** is read but dropped on write in v1. A CRC option can come later if developer mode wants it.
-5. **A pre-release for Colophon**: if Colophon wants to start on the reading API before the v1 tag, Florent tags `v0.1.0` after the reading slices.
+4. **The extended header** is read but dropped on write in v1. A CRC option can come later if a caller needs it.
+5. **A pre-release**: if a program wants to start on the reading API before the v1 tag, Florent tags `v0.1.0` after the reading slices.
 6. **One package**, not `v1` and `v2` subpackages: both share the layout, the errors, the text encodings and `Tags`, which subpackages would have to make public. File names carry the split instead (`v1.odin`, `v2_header.odin`, `v2_frames.odin`).
 7. **ID3v2.4's `SEEK` is not written**: it gives the offset to a next tag, which no longer holds once the tag is rewritten, and writing leaves a single tag (decision 3). It is the one frame a round trip leaves out.
 8. **ID3v1's encoding**: an unchanged ID3v1 tag keeps its bytes on write. A changed one keeps the encoding it was read in (`V1_Tag.encoding`: UTF-8 when its text was, as ffmpeg writes it, else Latin-1, the spec's), and `Write_Options.v1_encoding` forces Latin-1 or UTF-8; `sync_v1` and `v1_from_tag` take an encoding too, to report what does not fit in it. A tag edited by taggers of both kinds (some fields UTF-8, others Latin-1) is Latin-1 when every field fits it.
@@ -193,3 +191,5 @@ Florent's answers to the questions the plan raised:
 12. **NULs alone after the text**: NULs that follow the final terminator of a comment or lyrics, or the URL of a `WXXX` (such as a doubled terminator), hold no text, so leaving them out loses nothing: `convert` does not list such a frame, and `set_encoding` and `Write_Options.encoding` re-encode it. An odd last byte of UTF-16 text, which decoding drops, is a loss unless it is a NUL, the half terminator some writers end UTF-16 text with.
 13. **ID3v2.2 IDs in a conversion's list**: converting an ID3v2.2 tag lists its frames under their 3 letter IDs (`TYE`, not the `TYER` it passes through on the way to ID3v2.4), as it lists the frames it drops while renaming (`PIC`): the list says what the caller's file loses, in the IDs that file has.
 14. **Encodings in a conversion**: `convert` re-encodes only the text the target version cannot hold. A frame it rebuilds for another reason (values joined with "/" before ID3v2.4, a picture between `APIC` and `PIC`, people, dates) keeps its encoding and UTF-16 byte order when the target has that encoding and it holds the text (people merged from several frames take the first one's); otherwise the text is written in Latin-1 when it fits, else in UTF-16 little endian, as decision 10 wants for re-encoded frames.
+15. **Flags ID3v2.2 has no room for**: converting to ID3v2.2 drops the encrypted, grouped and too short frames first, under their own IDs, before the others take ID3v2.3's form: a grouped `TDRC` is listed once as `TDRC`, not as the `TYER`, `TDAT` and `TIME` it would become, and a grouped `TIPL` or `TMCL` is dropped alone, neither taking the other's people with it nor kept in it.
+16. **The library on its own**: the repository describes odid3 without naming a program that uses it, its fixtures included.

@@ -228,10 +228,10 @@ rebuilt_frames_keep_their_group :: proc(t: ^testing.T) {
 		),
 	)
 	defer odid3.destroy(&date)
+	// ID3v2.2 has no groups: the TDRC is dropped before it is split into TYER and TDAT.
 	dropped = convert(t, &date.v2, .V2_2)
-	testing.expect_value(t, len(dropped), 2)
-	testing.expect_value(t, dropped[0], odid3.Dropped_Frame{"TYER", .Grouped})
-	testing.expect_value(t, dropped[1], odid3.Dropped_Frame{"TDAT", .Grouped})
+	testing.expect_value(t, len(dropped), 1)
+	testing.expect_value(t, dropped[0], odid3.Dropped_Frame{"TDRC", .Grouped})
 	testing.expect_value(t, len(date.v2.frames), 1)
 }
 
