@@ -165,6 +165,8 @@ odin test tests -define:ODID3_INTEROP=true -define:ODID3_PYTHON=path/to/python3
 
 `ols.json` makes OLS check the package and its tests with the CI's `-vet -strict-style` flags. OLS formats with odinfmt and the repository's `odinfmt.json` on its own.
 
+A release is a `v*` tag on `main` whose version matches `VERSION` in `odid3.odin`: the release workflow checks it, runs the tests and publishes the GitHub release with notes made from the merged pull request titles.
+
 How the project is run, its conventions and its roadmap are in [AGENTS.md](AGENTS.md).
 
 ## License

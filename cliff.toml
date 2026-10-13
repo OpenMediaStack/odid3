@@ -1,0 +1,31 @@
+# How release notes are written from the history: the squash-merged pull request titles are
+# Conventional Commits, so the notes group themselves by type. Rendered by
+# .github/workflows/release.yml on every v* tag, and previewed by the CI.
+
+[changelog]
+trim = true
+body = """
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim | upper_first }}
+{% for commit in commits %}
+- {{ commit.message | upper_first }}
+{%- endfor %}
+{% endfor %}
+"""
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+tag_pattern = "v[0-9].*"
+sort_commits = "newest"
+commit_parsers = [
+  # The merge commit GitHub makes to test a pull request, in the CI's preview.
+  { message = "^Merge [0-9a-f]+ into [0-9a-f]+$", skip = true },
+  { message = "^feat", group = "<!-- 0 -->Features" },
+  { message = "^fix", group = "<!-- 1 -->Bug fixes" },
+  { message = "^perf", group = "<!-- 2 -->Performance" },
+  { message = "^refactor", group = "<!-- 3 -->Refactoring" },
+  { message = "^docs", group = "<!-- 4 -->Documentation" },
+  { message = "^test", group = "<!-- 5 -->Tests" },
+  { message = ".*", group = "<!-- 6 -->Other" },
+]

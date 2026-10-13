@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  ODIN_RELEASE: dev-2026-10
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: Check the tagged commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: The tag is on main
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::$GITHUB_REF_NAME is not on main"
+            exit 1
+          fi
+      - name: VERSION matches the tag
+        run: |
+          version=$(sed -n 's/^VERSION :: "\(.*\)"$/\1/p' odid3.odin)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::odid3.odin says VERSION :: \"$version\", the tag is $GITHUB_REF_NAME"
+            exit 1
+          fi
+      - uses: laytan/setup-odin@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release: ${{ env.ODIN_RELEASE }}
+      - name: Check
+        run: odin check . -no-entry-point -vet -strict-style
+      - name: Test
+        run: odin test tests -vet -strict-style -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
+      - name: Internal tests
+        run: odin test . -vet -strict-style -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
+
+  publish:
+    name: Publish the release
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Write the notes since the previous tag
+        id: notes
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+      - name: Publish the release
+        uses: softprops/action-gh-release@v3
+        with:
+          body: ${{ steps.notes.outputs.content }}
+          # A version with a suffix (v1.1.0-rc.1) is a pre-release.
+          prerelease: ${{ contains(github.ref_name, '-') }}
