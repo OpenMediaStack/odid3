@@ -696,11 +696,13 @@ big_endian_counter :: proc(b: []u8) -> (n: u64) {
 // A new frame holding content in the layout of a tag of the given version, owned by allocator. Text
 // that its encoding cannot hold gives .Not_Encodable, an encoding the version does not have
 // .Encoding_Not_In_Version, an ID of the wrong length .Bad_Frame_Id, a MIME type ID3v2.2 has no
-// image format for .Not_In_Version. Before ID3v2.4, several values are joined with "/", as mutagen
-// does. UTF-16 is written little endian after its byte order mark; set_encoding gives a frame the
-// other order. The frames inside a Chapter or Table_Of_Contents are checked as new ones, even those
-// decoded from a file: an ID other than capital letters and digits gives .Bad_Frame_Id, an encoding
-// byte the version lacks .Encoding_Not_In_Version.
+// image format for .Not_In_Version, a NUL inside a string a NUL ends (a description, a MIME type
+// but ID3v2.2's 3 character image format, an owner, an email, an element ID) .Bad_Value. Before
+// ID3v2.4, several values are joined with "/", as mutagen does. UTF-16 is written little endian
+// after its byte order mark; set_encoding gives a frame the other order. The frames inside a
+// Chapter or Table_Of_Contents are checked as new ones, even those decoded from a file: an ID other
+// than capital letters and digits gives .Bad_Frame_Id, an encoding byte the version lacks
+// .Encoding_Not_In_Version.
 encode_frame :: proc(
 	content: Frame_Content,
 	id: string,
@@ -874,6 +876,9 @@ encode_string :: proc(
 	terminated: bool,
 	order := Byte_Order.Little_Endian,
 ) -> Error {
+	if terminated && strings.index_byte(s, 0) >= 0 {
+		return .Bad_Value
+	}
 	ok := append_encoded(data, encoding, s, order) or_return
 	if !ok {
 		return .Not_Encodable
