@@ -211,6 +211,37 @@ encode_and_decode_agree :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, odid3.Error(odid3.Format_Error.Bad_Frame_Id))
 }
 
+@(test)
+encode_frame_refuses_a_nul_inside_a_terminated_string :: proc(t: ^testing.T) {
+	// A NUL ends these strings: one inside would cut them short, and the rest would be read as
+	// what follows them.
+	contents := []struct {
+		id:      string,
+		content: odid3.Frame_Content,
+	} {
+		{"TXXX", odid3.User_Text{.Latin1, "mo\x00od", {"Calm"}}},
+		{"WXXX", odid3.User_Url{.UTF16, "Sh\x00op", "https://example.com"}},
+		{"COMM", odid3.Comment{.UTF8, {'f', 'r', 'a'}, "No\x00te", "Bonjour"}},
+		{"APIC", odid3.Picture{.Latin1, "J\x00G", .Front_Cover, "Face", text("\xFF\xD8")}},
+		{"APIC", odid3.Picture{.UTF16, "image/png", .Front_Cover, "Fa\x00ce", text("\x89PNG")}},
+		{"UFID", odid3.Unique_File_Id{"http://\x00musicbrainz.org", text("id")}},
+		{"POPM", odid3.Popularimeter{"me@\x00example.com", 196, 0}},
+		{"PRIV", odid3.Private{"own\x00er", text("\x01")}},
+		{"CHAP", odid3.Chapter{element_id = "ch\x00p1"}},
+		{"CTOC", odid3.Table_Of_Contents{element_id = "t\x00oc"}},
+		{"CTOC", odid3.Table_Of_Contents{element_id = "toc", children = {"ch\x00p1"}}},
+	}
+	for c in contents {
+		_, err := odid3.encode_frame(c.content, c.id, .V2_4, context.temp_allocator)
+		testing.expectf(t, err == odid3.Error(odid3.Format_Error.Bad_Value), "%s: %v", c.id, err)
+	}
+	// An ID3v2.2 image format is 3 bytes, without a NUL to end it, and may hold one.
+	picture := odid3.Picture{.Latin1, "J\x00G", .Front_Cover, "Face", text("\xFF\xD8")}
+	f, err := odid3.encode_frame(picture, "PIC", .V2_2, context.temp_allocator)
+	testing.expect_value(t, err, nil)
+	testing.expect_value(t, string(f.data), "\x00J\x00G\x03Face\x00\xFF\xD8")
+}
+
 contents_equal :: proc(a, b: odid3.Frame_Content) -> bool {
 	switch x in a {
 	case odid3.Text:
