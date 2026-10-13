@@ -11,8 +11,8 @@ Dropped_Frame :: struct {
 	reason: Drop_Reason,
 }
 
-// The frames a conversion removed or carried only in part, in their order. Free with destroy and
-// the allocator given to convert.
+// The frames a conversion removed or carried only in part, in the order it met them. Free with
+// destroy and the allocator given to convert.
 Dropped_Frames :: [dynamic]Dropped_Frame
 
 // Why a conversion removed a frame, or carried it only in part.
@@ -90,9 +90,9 @@ clone_frame :: proc(f: ^Frame, allocator: runtime.Allocator) -> (duplicate: Fram
 // TORY into TDOR, IPLS into TIPL, and back; ID3v2.2's 3 letter IDs to 4 letters and back, PIC
 // into APIC), converts the frames inside chapters, re-encodes text the target cannot hold, joins
 // several values with "/" before ID3v2.4, and removes the frames it cannot carry; ID3v2.2 frames
-// have no flags, so encrypted and grouped frames are removed and the others lose theirs. It
-// returns, in their order, the frames it removed and those whose value it could only carry in part,
-// each with the reason. From .None it only sets the version; to .None it removes every frame. Tags
+// have no flags, so encrypted and grouped frames are removed first and the others lose theirs. It
+// returns, in the order it met them, the frames it removed and those whose value it could only
+// carry in part, each with the reason. From .None it only sets the version; to .None it removes every frame. Tags
 // whose frames were not all read (a compressed ID3v2.2 tag, pictures skipped when they need a new
 // layout) give .Incomplete_Tag. On an error the tag is left as it was. Free the result with
 // destroy and the same allocator.
@@ -144,6 +144,9 @@ convert_versions :: proc(
 		convert_from_v22(tag, dropped, allocator) or_return
 	}
 	renamed := len(dropped^)
+	if to == .V2_2 {
+		drop_flagged_for_v22(tag, dropped, allocator) or_return
+	}
 	// Going to ID3v2.2, an ID3v2.3 tag needs the same care as one from ID3v2.4: dates, people and
 	// text in ID3v2.3's form first.
 	middle := V2_Version.V2_3 if to == .V2_2 else to
@@ -555,8 +558,34 @@ restore_v22_ids :: proc(listed: []Dropped_Frame, allocator: runtime.Allocator) -
 	return nil
 }
 
-// Renames ID3v2.3 frames to their ID3v2.2 IDs, turns APIC into PIC, and drops the frames ID3v2.2
-// cannot hold: those without an ID3v2.2 ID, and those whose flags it has no room for.
+// ID3v2.2 frames have no flags, so the frames that need theirs are dropped before the ID3v2.3 step:
+// a frame that step rebuilds (a TDRC split into TYER, TDAT and TIME) would be dropped under IDs the
+// tag does not have, and one it merges into (a TIPL taking a TMCL) would take the other's text with
+// it.
+@(private)
+drop_flagged_for_v22 :: proc(
+	tag: ^Tag,
+	dropped: ^Dropped_Frames,
+	allocator: runtime.Allocator,
+) -> Error {
+	for i := 0; i < len(tag.frames); {
+		f := &tag.frames[i]
+		switch {
+		case f.problem == .Too_Short:
+			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
+		case is_stored(f) || .Encryption in f.format:
+			drop(tag, i, .Encrypted, dropped, allocator) or_return
+		case .Grouping in f.format:
+			drop(tag, i, .Grouped, dropped, allocator) or_return
+		case:
+			i += 1
+		}
+	}
+	return nil
+}
+
+// Renames ID3v2.3 frames to their ID3v2.2 IDs, turns APIC into PIC, and drops the frames without
+// an ID3v2.2 ID; drop_flagged_for_v22 has dropped those whose flags ID3v2.2 has no room for.
 @(private)
 convert_to_v22 :: proc(
 	tag: ^Tag,
@@ -567,12 +596,6 @@ convert_to_v22 :: proc(
 		f := &tag.frames[i]
 		id := v23_to_v22(f.id)
 		switch {
-		case f.problem == .Too_Short:
-			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
-		case is_stored(f) || .Encryption in f.format:
-			drop(tag, i, .Encrypted, dropped, allocator) or_return
-		case .Grouping in f.format:
-			drop(tag, i, .Grouped, dropped, allocator) or_return
 		case id == "":
 			drop(tag, i, .No_Equivalent, dropped, allocator) or_return
 		case f.id == "APIC" &&

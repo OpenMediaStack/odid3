@@ -827,7 +827,8 @@ frames_v22_cannot_hold :: proc(t: ^testing.T) {
 	tags := read(t, tag_file(4, 0, frames))
 	defer odid3.destroy(&tags)
 	dropped := convert(t, &tags.v2, .V2_2)
-	want := []odid3.Dropped_Frame{{"PRIV", .No_Equivalent}, {"TPE1", .Encrypted}}
+	// The frames ID3v2.2 has no flags for go first, before the ID3v2.3 step.
+	want := []odid3.Dropped_Frame{{"TPE1", .Encrypted}, {"PRIV", .No_Equivalent}}
 	testing.expect_value(t, len(dropped), len(want))
 	for d, i in dropped {
 		testing.expectf(
@@ -849,6 +850,41 @@ frames_v22_cannot_hold :: proc(t: ^testing.T) {
 	dropped = convert(t, &unknown.v2, .V2_4)
 	testing.expect_value(t, len(dropped), 1)
 	testing.expect_value(t, dropped[0].id, "XYZ")
+}
+
+@(test)
+grouped_people_go_alone_to_v22 :: proc(t: ^testing.T) {
+	// A grouped TIPL or TMCL is dropped under its own ID before the people frames merge into IPLS:
+	// it takes no other frame's people with it, nor is it kept in another's.
+	cases := []struct {
+		frames:  []u8,
+		dropped: odid3.Dropped_Frame,
+		want:    string,
+	} {
+		{
+			concat(
+				frame(4, "TIPL", concat({0x2A}, text("\x03producer\x00Ada")), 0, 0x40),
+				frame(4, "TMCL", text("\x03piano\x00Bea")),
+			),
+			{"TIPL", .Grouped},
+			"\x00piano\x00Bea\x00",
+		},
+		{
+			concat(
+				frame(4, "TIPL", text("\x03producer\x00Ada")),
+				frame(4, "TMCL", concat({0x2A}, text("\x03piano\x00Bea")), 0, 0x40),
+			),
+			{"TMCL", .Grouped},
+			"\x00producer\x00Ada\x00",
+		},
+	}
+	for c in cases {
+		tags := read(t, tag_file(4, 0, c.frames))
+		defer odid3.destroy(&tags)
+		expect_dropped(t, convert(t, &tags.v2, .V2_2), {c.dropped})
+		expect_frames(t, &tags.v2, {c.want})
+		testing.expect(t, len(tags.v2.frames) == 1 && tags.v2.frames[0].id == "IPL")
+	}
 }
 
 @(test)

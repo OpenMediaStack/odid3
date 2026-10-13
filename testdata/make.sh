@@ -99,9 +99,9 @@ ffmpeg "${silence[@]}" -id3v2_version 3 -write_id3v1 0 "${every_field[@]}" v23_f
 
 # v24_full.mp3: the same fields in ID3v2.4, where the year is a TDRC timestamp, plus a publisher
 # (TPUB) and a TXXX frame described "mood", which no accessor reads.
-# Expect: the values of v23_full.mp3, publisher "Colophon Records", user text mood "Calm".
+# Expect: the values of v23_full.mp3, publisher "Sinewave Records", user text mood "Calm".
 ffmpeg "${silence[@]}" -id3v2_version 4 -write_id3v1 0 "${every_field[@]}" \
-	-metadata publisher="Colophon Records" \
+	-metadata publisher="Sinewave Records" \
 	-metadata mood=Calm \
 	v24_full.mp3
 
@@ -152,13 +152,13 @@ rm cover.png
 
 # v23_cover.mp3: ID3v2.3 with a title, a publisher (TPUB) and an 8 by 8 red PNG as front cover
 # (APIC).
-# Expect: title "With a cover", one front cover picture (image/png), publisher "Colophon Records".
+# Expect: title "With a cover", one front cover picture (image/png), publisher "Sinewave Records".
 ffmpeg -v error -y -f lavfi -i anullsrc=r=44100:cl=mono -f lavfi -i color=c=red:s=8x8 -t 0.1 \
 	-map 0:a -map 1:v -frames:v 1 -c:v png -disposition:v attached_pic \
 	-metadata:s:v comment="Cover (front)" \
 	-fflags +bitexact -flags:a +bitexact -flags:v +bitexact -write_xing 0 \
 	-id3v2_version 3 -write_id3v1 0 \
-	-metadata title="With a cover" -metadata publisher="Colophon Records" \
+	-metadata title="With a cover" -metadata publisher="Sinewave Records" \
 	v23_cover.mp3
 
 # v23_v1_long_title.mp3: ID3v2.3 and ID3v1.1 written from the same values, with a title longer
