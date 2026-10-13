@@ -3,7 +3,6 @@ package odid3
 import "base:runtime"
 import "core:bytes"
 import "core:strings"
-import "core:unicode/utf8"
 
 // The content of a frame, decoded. Everything in it is allocated with the allocator given to
 // decode_frame; free it with destroy and that allocator.
@@ -336,24 +335,9 @@ decode_values :: proc(
 // decode.
 @(private)
 utf16_order_of :: proc(f: ^Frame) -> (order: Byte_Order, mixed, known: bool) {
-	text: []u8
-	only_first := false
-	switch f.id {
-	case "COMM", "COM", "USLT", "ULT":
-		text = f.data[min(4, len(f.data)):]
-	case "APIC":
-		nul := bytes.index_byte(f.data[1:], 0)
-		text = f.data[min(nul + 3, len(f.data)):] if nul >= 0 else nil
-		only_first = true
-	case "PIC":
-		text, only_first = f.data[min(5, len(f.data)):], true
-	case "WXXX", "WXX":
-		text, only_first = f.data[1:], true
-	case:
-		if len(f.id) == 0 || f.id[0] != 'T' && !is_itunes_text_frame(f.id) {
-			return .Little_Endian, false, false
-		}
-		text = f.data[1:]
+	text, only_first, decoded := text_of(f)
+	if !decoded {
+		return .Little_Endian, false, false
 	}
 	for rest, first := text, true; len(rest) > 0; first = false {
 		s: []u8
@@ -374,6 +358,34 @@ utf16_order_of :: proc(f: ^Frame) -> (order: Byte_Order, mixed, known: bool) {
 		}
 	}
 	return order, mixed, true
+}
+
+// The data of a frame with an encoding byte from its first string of text on; only_first is true
+// when that string is the only text (a URL or an image follows it). known is false for a layout
+// odid3 does not decode.
+@(private)
+text_of :: proc(f: ^Frame) -> (text: []u8, only_first, known: bool) {
+	if len(f.data) == 0 {
+		return nil, false, false
+	}
+	switch f.id {
+	case "COMM", "COM", "USLT", "ULT":
+		return f.data[min(4, len(f.data)):], false, true
+	case "APIC":
+		nul := bytes.index_byte(f.data[1:], 0)
+		if nul < 0 {
+			return nil, true, true
+		}
+		return f.data[min(nul + 3, len(f.data)):], true, true
+	case "PIC":
+		return f.data[min(5, len(f.data)):], true, true
+	case "WXXX", "WXX":
+		return f.data[1:], true, true
+	}
+	if len(f.id) == 0 || f.id[0] != 'T' && !is_itunes_text_frame(f.id) {
+		return nil, false, false
+	}
+	return f.data[1:], false, true
 }
 
 // ID3v2.4, section 4: all the UTF-16 strings of a frame share one byte order, so a string
@@ -907,11 +919,11 @@ v22_image_format :: proc(mime: string) -> string {
 // Re-encodes the text of a frame, or of every frame of a tag that holds text, chapters included.
 // Text the encoding cannot hold gives .Not_Encodable and changes nothing, an encoding the version
 // lacks .Encoding_Not_In_Version. A frame already in the encoding is left as it is. Text that would
-// not survive (characters after a comment's end, UTF-16 that is not valid) gives .Bad_Content
-// rather than being changed; before ID3v2.4, several values are joined with "/". UTF-16 with a
-// byte order mark is written in byte_order, and a frame already in the encoding but in the other
-// order is re-encoded; nil keeps the order of a frame already in UTF-16 and writes the others
-// little endian.
+// not survive (bytes after the text of a comment or the URL of a WXXX, a UTF-16 surrogate without
+// its pair) gives .Bad_Content rather than being changed; before ID3v2.4, several values are
+// joined with "/". UTF-16 with a byte order mark is written in byte_order, and a frame already in
+// the encoding but in the other order is re-encoded; nil keeps the order of a frame already in
+// UTF-16 and writes the others little endian.
 set_encoding :: proc {
 	set_frame_encoding,
 	set_tag_encoding,
@@ -1154,36 +1166,36 @@ reencoded :: proc(
 	return replacement, true, false, nil
 }
 
-// Whether a frame's text decoded whole: a comment's text ends with the frame or a final
-// terminator, and UTF-16 held no unpaired surrogate (which decodes as U+FFFD).
+// Whether a frame's text decoded whole: nothing but a final terminator follows the text of a
+// comment or the URL of a WXXX, and no UTF-16 string, read in the byte order decoding reads it
+// in, holds a surrogate without its pair (which decodes as U+FFFD, like a real U+FFFD).
 @(private)
 text_survives :: proc(f: ^Frame, content: ^Frame_Content) -> bool {
 	encoding, _ := encoding_of(f.data[0])
-	utf16 := encoding == .UTF16 || encoding == .UTF16BE
-	whole :: proc(utf16: bool, values: ..string) -> bool {
-		for value in values {
-			if utf16 && strings.contains_rune(value, utf8.RUNE_ERROR) {
-				return false
-			}
-		}
-		return true
-	}
-	switch c in content {
+	text, _, _ := text_of(f)
+	switch _ in content {
 	case Text:
-		return whole(utf16, ..c.values)
+		return values_paired(encoding, text)
 	case User_Text:
-		return whole(utf16, c.description) && whole(utf16, ..c.values)
+		description, values, _ := split_terminated(encoding, text)
+		return(
+			surrogates_paired(encoding, description) &&
+			values_paired(byte_order_of(encoding, description), values) \
+		)
 	case User_Url:
-		return whole(utf16, c.description)
+		description, url, _ := split_terminated(encoding, text)
+		_, after, _ := split_terminated(.Latin1, url)
+		return surrogates_paired(encoding, description) && len(after) == 0
 	case Picture:
-		return whole(utf16, c.description)
+		return surrogates_paired(encoding, first_string(encoding, text))
 	case Comment:
-		if !whole(utf16, c.description, c.text) {
-			return false
-		}
-		_, rest, _ := split_terminated(encoding, f.data[4:])
-		_, after, terminated := split_terminated(encoding, rest)
-		return !terminated || len(after) == 0
+		description, rest, _ := split_terminated(encoding, text)
+		comment, after, _ := split_terminated(encoding, rest)
+		return(
+			surrogates_paired(encoding, description) &&
+			surrogates_paired(byte_order_of(encoding, description), comment) &&
+			len(after) == 0 \
+		)
 	case Url,
 	     Unique_File_Id,
 	     Popularimeter,
@@ -1192,6 +1204,24 @@ text_survives :: proc(f: ^Frame, content: ^Frame_Content) -> bool {
 	     Chapter,
 	     Table_Of_Contents,
 	     Binary:
+	}
+	return true
+}
+
+// Whether the values of a text frame, read as decode_values reads them in ID3v2.4, pair their
+// surrogates.
+@(private)
+values_paired :: proc(encoding: Encoding, data: []u8) -> bool {
+	order := encoding
+	for rest, first := data, true; len(rest) > 0; first = false {
+		value: []u8
+		value, rest, _ = split_terminated(encoding, rest)
+		if !surrogates_paired(order, value) {
+			return false
+		}
+		if first {
+			order = byte_order_of(order, value)
+		}
 	}
 	return true
 }

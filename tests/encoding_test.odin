@@ -183,6 +183,147 @@ text_that_would_not_survive :: proc(t: ^testing.T) {
 }
 
 @(test)
+bytes_after_a_url_are_not_lost :: proc(t: ^testing.T) {
+	bad := odid3.Error(odid3.Format_Error.Bad_Content)
+	junk := concat({1}, utf16("", .Little_Endian), {0, 0}, text("http://x\x00junk"))
+	files := [?][]u8{tag_file(3, 0, frame(3, "WXXX", junk)), tag_file(2, 0, frame22("WXX", junk))}
+	for file in files {
+		tags := read(t, file)
+		defer odid3.destroy(&tags)
+		before := frames_snapshot(&tags.v2)
+		testing.expect_value(t, odid3.set_encoding(&tags.v2, odid3.Encoding.Latin1), bad)
+		testing.expect_value(
+			t,
+			odid3.set_encoding(&tags.v2.frames[0], tags.v2.version, .Latin1),
+			bad,
+		)
+		testing.expect_value(t, frames_snapshot(&tags.v2), before)
+		_, err := odid3.render(&tags.v2, {encoding = .Latin1}, context.temp_allocator)
+		testing.expect_value(t, err, bad)
+		_, err = odid3.render(&tags.v2, {utf16_byte_order = .Big_Endian}, context.temp_allocator)
+		testing.expect_value(t, err, bad)
+	}
+
+	// A terminator alone after the URL holds nothing.
+	ended := read(
+		t,
+		tag_file(
+			3,
+			0,
+			frame(3, "WXXX", concat({1}, utf16("", .Little_Endian), {0, 0}, text("http://x\x00"))),
+		),
+	)
+	defer odid3.destroy(&ended)
+	testing.expect_value(t, odid3.set_encoding(&ended.v2, odid3.Encoding.Latin1), nil)
+	testing.expect_value(t, string(ended.v2.frames[0].data), "\x00\x00http://x")
+}
+
+@(test)
+a_real_replacement_character_survives :: proc(t: ^testing.T) {
+	// U+FFFD written as it should be (FD FF or FF FD) is a character like any other. Strings
+	// without a byte order mark follow a big endian first string, where 00 D8 is "Ø".
+	frames := concat(
+		frame(4, "TIT2", concat({1}, utf16("A\uFFFD", .Little_Endian))),
+		frame(4, "TPE1", concat({1}, utf16("B", .Big_Endian), {0, 0, 0xFF, 0xFD, 0x00, 0xD8})),
+		frame(4, "TXXX", concat({1}, utf16("\uFFFD", .Big_Endian), {0, 0, 0x00, 0xD8})),
+		frame(
+			4,
+			"COMM",
+			concat({1}, text("eng"), utf16("d", .Big_Endian), {0, 0, 0xFF, 0xFD, 0x00, 0xD8}),
+		),
+		frame(4, "WXXX", concat({1}, utf16("\uFFFD", .Little_Endian), {0, 0}, text("http://x"))),
+		frame(
+			4,
+			"APIC",
+			concat(
+				{1},
+				text("image/png\x00\x03"),
+				utf16("\uFFFD", .Big_Endian),
+				{0, 0, 0x89, 'P', 'N', 'G'},
+			),
+		),
+	)
+	in_utf8 := [?]string {
+		"\x03A\uFFFD",
+		"\x03B\x00\uFFFDØ",
+		"\x03\uFFFD\x00Ø",
+		"\x03engd\x00\uFFFDØ",
+		"\x03\uFFFD\x00http://x",
+		"\x03image/png\x00\x03\uFFFD\x00\x89PNG",
+	}
+	expect_utf8 :: proc(t: ^testing.T, tag: ^odid3.Tag, want: []string, loc := #caller_location) {
+		testing.expect_value(t, odid3.set_encoding(tag, odid3.Encoding.UTF8), nil, loc = loc)
+		testing.expect_value(t, len(tag.frames), len(want), loc = loc)
+		for f, i in tag.frames[:min(len(tag.frames), len(want))] {
+			testing.expectf(t, string(f.data) == want[i], "%s: %x", f.id, f.data, loc = loc)
+		}
+	}
+
+	tags := read(t, tag_file(4, 0, frames))
+	defer odid3.destroy(&tags)
+	written, err := odid3.render(&tags.v2, {encoding = .UTF8}, context.temp_allocator)
+	testing.expect_value(t, err, nil)
+	again := read(t, concat(written, fixture(t, "no_tag.mp3")))
+	defer odid3.destroy(&again)
+	expect_utf8(t, &again.v2, in_utf8[:])
+	expect_utf8(t, &tags.v2, in_utf8[:])
+
+	for order in odid3.Byte_Order {
+		swapped := read(t, tag_file(4, 0, frames))
+		defer odid3.destroy(&swapped)
+		testing.expect_value(t, odid3.set_encoding(&swapped.v2, .UTF16, order), nil)
+		expect_utf8(t, &swapped.v2, in_utf8[:])
+
+		original := read(t, tag_file(4, 0, frames))
+		defer odid3.destroy(&original)
+		rendered, render_err := odid3.render(
+			&original.v2,
+			{utf16_byte_order = order},
+			context.temp_allocator,
+		)
+		testing.expect_value(t, render_err, nil)
+		read_back := read(t, concat(rendered, fixture(t, "no_tag.mp3")))
+		defer odid3.destroy(&read_back)
+		expect_utf8(t, &read_back.v2, in_utf8[:])
+	}
+
+	// D8 00 after a big endian first string is a surrogate without its pair, though it would be
+	// "Ø" in little endian; a real U+FFFD does not make one survive. Descriptions are checked too.
+	bad := odid3.Error(odid3.Format_Error.Bad_Content)
+	unpaired := []u8{0xFE, 0xFF, 0xD8, 0x00}
+	png := []u8{0, 0, 0x89, 'P', 'N', 'G'}
+	lone_surrogates := [?][]u8 {
+		frame(4, "TPE1", concat({1}, utf16("B", .Big_Endian), {0, 0, 0xD8, 0x00})),
+		frame(4, "COMM", concat({1}, text("eng"), utf16("d", .Big_Endian), {0, 0, 0xD8, 0x00})),
+		frame(4, "TIT2", concat({1}, utf16("\uFFFD", .Big_Endian), {0xD8, 0x00})),
+		frame(4, "TXXX", concat({1}, unpaired, {0, 0}, utf16("v", .Big_Endian))),
+		frame(4, "WXXX", concat({1}, unpaired, {0, 0}, text("http://x"))),
+		frame(4, "COMM", concat({1}, text("eng"), unpaired, {0, 0}, utf16("c", .Big_Endian))),
+		frame(4, "APIC", concat({1}, text("image/png\x00\x03"), unpaired, png)),
+	}
+	for lone in lone_surrogates {
+		refused := read(t, tag_file(4, 0, lone))
+		defer odid3.destroy(&refused)
+		testing.expect_value(t, odid3.set_encoding(&refused.v2, odid3.Encoding.UTF8), bad)
+		_, err = odid3.render(&refused.v2, {encoding = .UTF8}, context.temp_allocator)
+		testing.expect_value(t, err, bad)
+		_, err = odid3.render(
+			&refused.v2,
+			{utf16_byte_order = .Little_Endian},
+			context.temp_allocator,
+		)
+		testing.expect_value(t, err, bad)
+	}
+	// Little endian, so that reading one byte off would find no surrogate.
+	unpaired_le := []u8{0xFF, 0xFE, 0x00, 0xD8}
+	v22 := read(t, tag_file(2, 0, frame22("PIC", concat({1}, text("PNG\x03"), unpaired_le, png))))
+	defer odid3.destroy(&v22)
+	testing.expect_value(t, odid3.set_encoding(&v22.v2, odid3.Encoding.Latin1), bad)
+	_, err = odid3.render(&v22.v2, {encoding = .Latin1}, context.temp_allocator)
+	testing.expect_value(t, err, bad)
+}
+
+@(test)
 frames_with_problems_and_chapters :: proc(t: ^testing.T) {
 	wrong_length := frame(4, "TIT2", concat({0, 0, 0, 99}, text("\x01\xFF\xFEA\x00")), 0, 0x01)
 	lying := frame(4, "TPE1", text("\x01\xFF\xFEB\x00"), 0, 0x02)
