@@ -92,10 +92,10 @@ clone_frame :: proc(f: ^Frame, allocator: runtime.Allocator) -> (duplicate: Fram
 // several values with "/" before ID3v2.4, and removes the frames it cannot carry; ID3v2.2 frames
 // have no flags, so encrypted and grouped frames are removed first and the others lose theirs. It
 // returns, in the order it met them, the frames it removed and those whose value it could only
-// carry in part, each with the reason. From .None it only sets the version; to .None it removes every frame. Tags
-// whose frames were not all read (a compressed ID3v2.2 tag, pictures skipped when they need a new
-// layout) give .Incomplete_Tag. On an error the tag is left as it was. Free the result with
-// destroy and the same allocator.
+// carry in part, each with the reason. From .None it only sets the version; to .None it removes
+// every frame. Tags whose frames were not all read (a compressed ID3v2.2 tag, pictures skipped
+// when they need a new layout) give .Incomplete_Tag. On an error the tag is left as it was. Free
+// the result with destroy and the same allocator.
 convert :: proc(
 	tag: ^Tag,
 	to: V2_Version,
@@ -558,10 +558,11 @@ restore_v22_ids :: proc(listed: []Dropped_Frame, allocator: runtime.Allocator) -
 	return nil
 }
 
-// ID3v2.2 frames have no flags, so the frames that need theirs are dropped before the ID3v2.3 step:
-// a frame that step rebuilds (a TDRC split into TYER, TDAT and TIME) would be dropped under IDs the
-// tag does not have, and one it merges into (a TIPL taking a TMCL) would take the other's text with
-// it.
+// ID3v2.2 frames have no flags, so the frames that cannot do without theirs (encrypted, grouped,
+// or shorter than their flags announce) are dropped before the ID3v2.3 step, under their own IDs:
+// that step would split a grouped TDRC into TYER, TDAT and TIME, dropped under IDs the tag does
+// not have, and merge people frames of different groups, a grouped one taking the other's people
+// with it or being kept in it.
 @(private)
 drop_flagged_for_v22 :: proc(
 	tag: ^Tag,

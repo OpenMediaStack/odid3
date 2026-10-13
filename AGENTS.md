@@ -2,7 +2,7 @@
 
 An ID3 library written in Odin, part of Open Media Stack. It reads and writes the tags of MP3 files: ID3v1, ID3v1.1 and the Enhanced TAG, ID3v2.2, ID3v2.3 and ID3v2.4. Every frame of a tag is kept, unknown ones as raw bytes, so nothing is lost on a round trip; typed accessors cover the common fields (title, artist, album, date, track, disc, genre, comment, pictures, user text); a raw frame view gives each frame's ID, offset, size, flags and decoded value. Writing is safe (a temporary file renamed over the original) and never touches the audio. Only Odin's `core:` library is used. Open source under the MIT license.
 
-What it must offer beyond that is listed in [Needs](#needs).
+What it must offer callers is listed in [Needs](#needs).
 
 **Scope.** v1 reads and writes every ID3 version above, with options for the text encoding, the padding, unsynchronisation and compression. The MPEG audio stream (duration, bitrate), APE tags and Lyrics3 tags are out of scope: their bytes are found and kept, never parsed. A command line tool comes in v2, after the v1 tag (see [Roadmap](#roadmap)).
 
@@ -92,7 +92,7 @@ Add a file only when a real boundary appears, never upfront. Throwaway experimen
 - Write ID3v2.4 by default, or ID3v2.3 when the caller asks.
 - ID3v1: keep it where it exists (rewritten from the new values), always write it, or never write it. Report the values that do not fit (30 Latin-1 characters, 28 for the comment of an ID3v1.1 tag) before saving.
 - Write any version on demand, to produce test files for instance: ID3v2 none, 2.2, 2.3 or 2.4; ID3v1 none, 1.0 or 1.1. A conversion says what it will lose.
-- Set the text encoding of each frame (ISO-8859-1, UTF-16 and, in ID3v2.4, UTF-16BE and UTF-8), the padding size, unsynchronisation and compression, and show a raw frame view: each frame's ID, offset, size, flags and decoded value.
+- Set the text encoding of each frame (ISO-8859-1, UTF-16 and, in ID3v2.4, UTF-16BE and UTF-8), the padding size, unsynchronisation and compression, and give a raw frame view: each frame's ID, offset, size, flags and decoded value.
 - Read many files from worker threads, without loading whole files.
 
 ## References
@@ -180,7 +180,7 @@ Florent's answers to the questions the plan raised:
 1. **Compressed frames on write** use a small deflate encoder of our own in `deflate.odin`, rather than `vendor:zlib`: the library stays free of C, its allocations go through Odin's allocators (so the test runner sees them), and it keeps compiling for targets without a C zlib, such as a web build.
 2. **The MPEG audio code** of the prototype (duration, bitrate, Xing and VBRI headers) goes into the program that needs it, fed by odid3's `Layout` (which says where the audio starts and ends). It moves to its own library only if a second Odin program needs it.
 3. **Two ID3v2 tags in one file** (a leading tag and an appended one, or two leading tags left by a broken tagger): the first is read, the other is reported as a warning, and writing puts a single leading tag in place of both. This departs from section 5 of the ID3v2.4 structure, where a later tag updates the earlier one; TagLib, mutagen and ffmpeg do not read appended tags at all.
-4. **The extended header** is read but dropped on write in v1. A CRC option can come later if developer mode wants it.
+4. **The extended header** is read but dropped on write in v1. A CRC option can come later if a caller needs it.
 5. **A pre-release**: if a program wants to start on the reading API before the v1 tag, Florent tags `v0.1.0` after the reading slices.
 6. **One package**, not `v1` and `v2` subpackages: both share the layout, the errors, the text encodings and `Tags`, which subpackages would have to make public. File names carry the split instead (`v1.odin`, `v2_header.odin`, `v2_frames.odin`).
 7. **ID3v2.4's `SEEK` is not written**: it gives the offset to a next tag, which no longer holds once the tag is rewritten, and writing leaves a single tag (decision 3). It is the one frame a round trip leaves out.
