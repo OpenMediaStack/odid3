@@ -93,11 +93,11 @@ clone_frame :: proc(f: ^Frame, allocator: runtime.Allocator) -> (duplicate: Fram
 // several values with "/" before ID3v2.4, and removes the frames it cannot carry, the known frames
 // the target does not have among them. Going to ID3v2.2, which has neither frame flags nor
 // chapters, the encrypted and grouped frames and those it has no ID for are removed first, and the
-// others lose their flags. It returns, in the order it met them, the frames it removed and those whose value it could only
-// carry in part, each with the reason. From .None it only sets the version; to .None it removes
-// every frame. Tags whose frames were not all read (a compressed ID3v2.2 tag, pictures skipped
-// when they need a new layout) give .Incomplete_Tag. On an error the tag is left as it was. Free
-// the result with destroy and the same allocator.
+// others lose their flags. It returns, in the order it met them, the frames it removed and those
+// whose value it could only carry in part, each with the reason. From .None it only sets the
+// version; to .None it removes every frame. Tags whose frames were not all read (a compressed
+// ID3v2.2 tag, pictures skipped when they need a new layout) give .Incomplete_Tag. On an error
+// the tag is left as it was. Free the result with destroy and the same allocator.
 convert :: proc(
 	tag: ^Tag,
 	to: V2_Version,
