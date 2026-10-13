@@ -834,14 +834,17 @@ chapters_follow_the_version :: proc(t: ^testing.T) {
 @(test)
 chapters_keep_what_top_level_keeps :: proc(t: ^testing.T) {
 	// What odid3 would not make but keeps from a damaged file, an encoding byte above 3 or an odd
-	// ID (ID3v2.2's 3 letters and a NUL), stays as it is through a conversion, inside a CHAP or
-	// CTOC as at top level, while the frames beside it convert.
+	// ID (ID3v2.2's 3 letters and a NUL, "Tab!"), stays through a conversion, inside a CHAP or CTOC
+	// as at top level, even when the text is re-encoded (UTF-8 and several values going to
+	// ID3v2.3), while the frames beside it convert. A frame a caller makes with an odd ID is still
+	// refused.
 	for major in ([]u8{3, 4}) {
 		to: odid3.V2_Version = .V2_4 if major == 3 else .V2_3
 		frames := concat(
 			frame(major, "TIT2", {0x05, 0x41}),
 			frame(major, "TT2\x00", text("\x00T")),
 			frame(major, "TYER" if major == 3 else "TDRC", text("\x002019")),
+			frame(major, "Tab!", text("\x03A\x00B")),
 		)
 		table := frame(major, "CTOC", concat(text("toc\x00"), {0x03, 0x00}, frames))
 		for body in ([][]u8{frames, chapter_frame(major, "ch0", 0, 10, frames), table}) {
@@ -868,24 +871,32 @@ chapters_keep_what_top_level_keeps :: proc(t: ^testing.T) {
 			date := "TDRC" if to == .V2_4 else "TYER"
 			testing.expectf(
 				t,
-				slice.equal(ids[:], []string{"TIT2", "TT2\x00", date}),
+				slice.equal(ids[:], []string{"TIT2", "TT2\x00", date, "Tab!"}),
 				"%s: %q",
 				body[:4],
 				ids,
 			)
-			if len(inside) == 3 {
+			if len(inside) == 4 {
 				testing.expectf(
 					t,
 					slice.equal(inside[0].data, []u8{0x05, 0x41}) &&
-					string(inside[1].data) == "\x00T",
-					"%s: %x %x",
+					string(inside[1].data) == "\x00T" &&
+					string(inside[3].data) == ("\x03A\x00B" if to == .V2_4 else "\x00A/B"),
+					"%s: %x %x %x",
 					body[:4],
 					inside[0].data,
 					inside[1].data,
+					inside[3].data,
 				)
 			}
 		}
 	}
+	made := one_new_frame(.V2_4, "Tab!", text("\x03A\x00B"))
+	defer odid3.destroy(&made)
+	expect_dropped(t, convert(t, &made, .V2_3), {})
+	testing.expect_value(t, string(made.frames[0].data), "\x00A/B")
+	_, made_err := odid3.render(&made, {}, context.temp_allocator)
+	testing.expect_value(t, made_err, odid3.Error(odid3.Format_Error.Bad_Frame_Id))
 }
 
 @(test)
