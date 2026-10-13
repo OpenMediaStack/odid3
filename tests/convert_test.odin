@@ -1,6 +1,7 @@
 package odid3_tests
 
 import "core:mem"
+import "core:slice"
 import "core:testing"
 
 import odid3 "../"
@@ -940,8 +941,8 @@ frames_v22_cannot_hold :: proc(t: ^testing.T) {
 	tags := read(t, tag_file(4, 0, frames))
 	defer odid3.destroy(&tags)
 	dropped := convert(t, &tags.v2, .V2_2)
-	// The frames ID3v2.2 has no flags for go first, before the ID3v2.3 step.
-	want := []odid3.Dropped_Frame{{"TPE1", .Encrypted}, {"PRIV", .No_Equivalent}}
+	// What ID3v2.2 cannot hold goes first, before the ID3v2.3 step, in the order of the frames.
+	want := []odid3.Dropped_Frame{{"PRIV", .No_Equivalent}, {"TPE1", .Encrypted}}
 	testing.expect_value(t, len(dropped), len(want))
 	for d, i in dropped {
 		testing.expectf(
@@ -1020,6 +1021,135 @@ flagged_frames_go_alone_to_v22 :: proc(t: ^testing.T) {
 		for f in tags.v2.frames {
 			testing.expect_value(t, f.id, "IPL")
 		}
+	}
+}
+
+@(test)
+frames_the_target_has_no_place_for :: proc(t: ^testing.T) {
+	// A frame odid3 knows that the target does not have and that no step converts is dropped:
+	// those ID3v2.4 removed, those it added (but iTunes' sort frames, which iTunes writes in
+	// ID3v2.3), and in ID3v2.2 whatever has no ID there, chapters before the frames inside them
+	// are converted. Unknown frames stay between ID3v2.3 and 2.4.
+	lone := frame(4, "TIT2", {0x02, 0xD8, 0x00})
+	cases := []struct {
+		name:    string,
+		major:   u8,
+		frames:  []u8,
+		to:      odid3.V2_Version,
+		dropped: []odid3.Dropped_Frame,
+		ids:     []string,
+	} {
+		{
+			"removed by ID3v2.4",
+			3,
+			concat(
+				frame(3, "TRDA", text("\x00June")),
+				frame(3, "TSIZ", text("\x001000")),
+				frame(3, "TIT2", text("\x00T")),
+			),
+			.V2_4,
+			{{"TRDA", .No_Equivalent}, {"TSIZ", .No_Equivalent}},
+			{"TIT2"},
+		},
+		{
+			"added by ID3v2.4",
+			4,
+			concat(
+				frame(4, "TDEN", text("\x032019")),
+				frame(4, "TDRL", text("\x032019")),
+				frame(4, "TDTG", text("\x032019")),
+				frame(4, "TMOO", text("\x03Calm")),
+				frame(4, "TPRO", text("\x03(P)")),
+				frame(4, "TSST", text("\x03One")),
+				frame(4, "TSOP", text("\x03Ada")),
+			),
+			.V2_3,
+			{
+				{"TDEN", .No_Equivalent},
+				{"TDRL", .No_Equivalent},
+				{"TDTG", .No_Equivalent},
+				{"TMOO", .No_Equivalent},
+				{"TPRO", .No_Equivalent},
+				{"TSST", .No_Equivalent},
+			},
+			{"TSOP"},
+		},
+		{
+			"chapters to ID3v2.2",
+			4,
+			concat(
+				chapter_frame(4, "ch0", 0, 10, lone),
+				frame(4, "CTOC", concat(text("toc\x00\x03\x01ch0\x00"), lone)),
+			),
+			.V2_2,
+			{{"CHAP", .No_Equivalent}, {"CTOC", .No_Equivalent}},
+			{},
+		},
+		{"unknown to ID3v2.3", 4, frame(4, "XYZW", text("data")), .V2_3, {}, {"XYZW"}},
+		{
+			"unknown to ID3v2.2",
+			4,
+			concat(frame(4, "XYZW", text("data")), frame(4, "XYZV", text("data"), 0x40)),
+			.V2_2,
+			{{"XYZW", .No_Equivalent}, {"XYZV", .Discard_On_Tag_Alter}},
+			{},
+		},
+		{
+			"from ID3v2.2 to ID3v2.4",
+			2,
+			concat(frame22("TRD", text("\x00June")), frame22("TT2", text("\x00T"))),
+			.V2_4,
+			{{"TRD", .No_Equivalent}},
+			{"TIT2"},
+		},
+	}
+	for c in cases {
+		tags := read(t, tag_file(c.major, 0, c.frames))
+		defer odid3.destroy(&tags)
+		dropped := convert(t, &tags.v2, c.to)
+		listed := len(dropped) == len(c.dropped)
+		for d, i in dropped {
+			listed = listed && i < len(c.dropped) && d == c.dropped[i]
+		}
+		testing.expectf(t, listed, "%s: dropped %v, want %v", c.name, dropped, c.dropped)
+		ids := make([dynamic]string, context.temp_allocator)
+		for f in tags.v2.frames {
+			append(&ids, f.id)
+		}
+		testing.expectf(
+			t,
+			slice.equal(ids[:], c.ids),
+			"%s: frames %v, want %v",
+			c.name,
+			ids,
+			c.ids,
+		)
+	}
+
+	// Inside a chapter, the same.
+	chaptered := read(
+		t,
+		tag_file(
+			3,
+			0,
+			chapter_frame(
+				3,
+				"ch0",
+				0,
+				10,
+				frame(3, "TRDA", text("\x00June")),
+				frame(3, "TIT2", text("\x00T")),
+			),
+		),
+	)
+	defer odid3.destroy(&chaptered)
+	expect_dropped(t, convert(t, &chaptered.v2, .V2_4), {{"TRDA", .No_Equivalent}})
+	content, err := odid3.decode_frame(&chaptered.v2.frames[0], .V2_4)
+	defer odid3.destroy(&content)
+	chapter, is_chapter := content.(odid3.Chapter)
+	testing.expect(t, err == nil && is_chapter && len(chapter.frames) == 1)
+	if is_chapter && len(chapter.frames) == 1 {
+		testing.expect_value(t, chapter.frames[0].id, "TIT2")
 	}
 }
 
