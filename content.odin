@@ -942,11 +942,11 @@ v22_image_format :: proc(mime: string) -> string {
 // Text the encoding cannot hold gives .Not_Encodable and changes nothing, an encoding the version
 // lacks .Encoding_Not_In_Version. A frame already in the encoding is left as it is. Text that would
 // not survive (bytes other than NULs after the text of a comment or the URL of a WXXX, a UTF-16
-// surrogate without its pair, an odd last byte of UTF-16 text other than a NUL) gives .Bad_Content
-// rather than being changed; before ID3v2.4, several values are joined with "/". UTF-16 with a
-// byte order mark is written in byte_order, and a frame already in the encoding but in the other
-// order is re-encoded; nil keeps the order of a frame already in UTF-16 and writes the others
-// little endian.
+// surrogate without its pair, an odd last byte of UTF-16 text other than a NUL) is never changed:
+// set_frame_encoding gives .Bad_Content for it, and set_tag_encoding leaves its frame as it is.
+// Before ID3v2.4, several values are joined with "/". UTF-16 with a byte order mark is written in
+// byte_order, and a frame already in the encoding but in the other order is re-encoded; nil keeps
+// the order of a frame already in UTF-16 and writes the others little endian.
 set_encoding :: proc {
 	set_frame_encoding,
 	set_tag_encoding,
@@ -976,10 +976,10 @@ set_frame_encoding :: proc(
 	return nil
 }
 
-// See set_encoding. Every frame changes, or none; the frames set_frame_encoding refuses as
-// .Not_Decodable, a COMM, USLT or APIC whose data does not follow its layout, empty ones, those
-// with an unknown encoding byte and a CHAP or CTOC whose content does not decode are left as they
-// are.
+// See set_encoding. Every frame changes, or none; the frames set_frame_encoding refuses (as
+// .Not_Decodable, or as .Bad_Content: a COMM, USLT or APIC whose data does not follow its layout,
+// one whose text would not survive), empty ones, those with an unknown encoding byte and a CHAP or
+// CTOC whose content does not decode are left as they are.
 set_tag_encoding :: proc(
 	tag: ^Tag,
 	encoding: Encoding,
@@ -1117,9 +1117,9 @@ keep_identity :: proc(replacement, f: ^Frame) {
 
 // The frame with its text in another encoding (nil keeps its own), UTF-16 with a byte order mark
 // in order. changed is false for a frame without text, an empty one, one with an unknown encoding
-// byte, one whose data is not its content or does not follow its layout, and one already in the
-// encoding and order; refused is what set_frame_encoding gives for a frame odid3 does not decode,
-// which set_tag_encoding leaves as it is.
+// byte, one whose data is not its content or does not follow its layout, one whose text would not
+// survive, and one already in the encoding and order; refused is what set_frame_encoding gives for
+// a frame it cannot re-encode, which set_tag_encoding leaves as it is.
 @(private)
 reencoded :: proc(
 	f: ^Frame,
@@ -1162,7 +1162,7 @@ reencoded :: proc(
 		return {}, false, .None, decode_err
 	}
 	if !text_survives(f, &content) {
-		return {}, false, .None, .Bad_Content
+		return {}, false, .Bad_Content, nil
 	}
 	switch &c in content {
 	case Text:
