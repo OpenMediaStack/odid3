@@ -972,3 +972,68 @@ v22_conversion_allocation_failures :: proc(t: ^testing.T) {
 		testing.expectf(t, succeeded, "%s never converted", c.name)
 	}
 }
+
+@(test)
+v22_frames_are_listed_under_their_ids :: proc(t: ^testing.T) {
+	// On the way to ID3v2.4, these frames pass through RVAD, TYER, TDAT, TORY and IPLS.
+	file := tag_file(
+		2,
+		0,
+		frame22("PIC", concat(text("\x01JPG\x03"), {0xFF, 0xFE, 0x00, 0xD8, 0, 0})),
+		frame22("RVA", {0x03, 0x10, 0, 1, 0, 2, 0, 3, 0, 4}),
+		frame22("TYE", text("\x002019\x002020")),
+		frame22("TDA", text("\x000013")),
+		frame22("TOR", text("\x001987\x00junk")),
+		frame22("IPL", {1, 0xFF, 0xFE, 'p', 0, 0, 0, 0xFF, 0xFE, 0x00, 0xD8, 0, 0}),
+	)
+	tags := read(t, file)
+	defer odid3.destroy(&tags)
+	expect_dropped(
+		t,
+		convert(t, &tags.v2, .V2_4),
+		{
+			{"PIC", .Partly_Converted},
+			{"RVA", .No_Equivalent},
+			{"TDA", .No_Equivalent},
+			{"TYE", .Partly_Converted},
+			{"TOR", .Partly_Converted},
+			{"IPL", .Partly_Converted},
+		},
+	)
+
+	succeeded := false
+	for budget in 0 ..< 200 {
+		failing := Failing{context.allocator, 1 << 30}
+		allocator := failing_allocator(&failing)
+		failed, read_err := odid3.read_bytes(file, {}, allocator)
+		testing.expect_value(t, read_err, nil)
+		before := frames_snapshot(&failed.v2)
+		failing.left = budget
+		dropped, err := odid3.convert(&failed.v2, .V2_4, allocator)
+		failing.left = 1 << 30
+		odid3.destroy(&dropped, allocator)
+		if err == nil {
+			succeeded = true
+		} else {
+			testing.expectf(t, frames_snapshot(&failed.v2) == before, "at budget %d", budget)
+		}
+		odid3.destroy(&failed)
+		if succeeded {
+			break
+		}
+	}
+	testing.expect(t, succeeded)
+
+	// A frame a caller added under a 4 letter ID is dropped under that ID.
+	added := read(t, tag_file(2, 0, frame22("TYE", text("\x002019"))))
+	defer odid3.destroy(&added)
+	for id in ([]string{"TYER", "RVAD"}) {
+		f := odid3.make_frame(id, text("\x00x"), added.v2.allocator)
+		testing.expect_value(t, odid3.add_frame(&added.v2, f), nil)
+	}
+	expect_dropped(
+		t,
+		convert(t, &added.v2, .V2_4),
+		{{"TYER", .No_Equivalent}, {"RVAD", .No_Equivalent}},
+	)
+}
