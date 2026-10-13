@@ -130,22 +130,103 @@ encodings_change_nothing_else :: proc(t: ^testing.T) {
 	testing.expect_value(t, f.data[0], 3)
 }
 
+// A frame whose text would not survive re-encoding, in a tag of version major: set_encoding on the
+// tag and the write options leave it as it is and change a title beside it as they would alone,
+// while set_encoding on that frame alone gives .Bad_Content.
+expect_left_as_is :: proc(
+	t: ^testing.T,
+	major: u8,
+	kept: []u8,
+	encoding: odid3.Encoding,
+	order: odid3.Byte_Order,
+	loc := #caller_location,
+) {
+	expect_kept :: proc(
+		t: ^testing.T,
+		tag, alone: ^odid3.Tag,
+		data: []u8,
+		loc := #caller_location,
+	) {
+		testing.expectf(
+			t,
+			len(tag.frames) == 2 &&
+			len(alone.frames) == 1 &&
+			bytes.equal(tag.frames[0].data, data) &&
+			bytes.equal(tag.frames[1].data, alone.frames[0].data),
+			"%x: %d frames",
+			data,
+			len(tag.frames),
+			loc = loc,
+		)
+	}
+	in_utf16 := concat({1}, utf16("T", .Little_Endian))
+	title := frame22("TT2", in_utf16) if major == 2 else frame(major, "TIT2", in_utf16)
+	data := kept[6:] if major == 2 else kept[10:]
+	both := read(t, tag_file(major, 0, kept, title), loc)
+	defer odid3.destroy(&both)
+	alone := read(t, tag_file(major, 0, title), loc)
+	defer odid3.destroy(&alone)
+	for options in ([]odid3.Write_Options{{encoding = encoding}, {utf16_byte_order = order}}) {
+		written, err := odid3.render(&both.v2, options, context.temp_allocator)
+		testing.expect_value(t, err, nil, loc = loc)
+		wanted, wanted_err := odid3.render(&alone.v2, options, context.temp_allocator)
+		testing.expect_value(t, wanted_err, nil, loc = loc)
+		again := read(t, written, loc)
+		defer odid3.destroy(&again)
+		title_alone := read(t, wanted, loc)
+		defer odid3.destroy(&title_alone)
+		expect_kept(t, &again.v2, &title_alone.v2, data, loc)
+	}
+	testing.expect_value(
+		t,
+		odid3.set_encoding(&both.v2.frames[0], both.v2.version, encoding),
+		odid3.Error(odid3.Format_Error.Bad_Content),
+		loc = loc,
+	)
+	testing.expect_value(t, odid3.set_encoding(&both.v2, encoding, order), nil, loc = loc)
+	testing.expect_value(t, odid3.set_encoding(&alone.v2, encoding, order), nil, loc = loc)
+	expect_kept(t, &both.v2, &alone.v2, data, loc)
+}
+
 @(test)
 text_that_would_not_survive :: proc(t: ^testing.T) {
-	comment := read(t, tag_file(3, 0, frame(3, "COMM", text("\x00eng\x00line1\x00line2"))))
-	defer odid3.destroy(&comment)
-	testing.expect_value(
+	expect_left_as_is(
 		t,
-		odid3.set_encoding(&comment.v2, odid3.Encoding.UTF16),
-		odid3.Error(odid3.Format_Error.Bad_Content),
+		3,
+		frame(3, "COMM", text("\x00eng\x00line1\x00line2")),
+		.UTF16,
+		.Big_Endian,
 	)
-	lone := read(t, tag_file(3, 0, frame(3, "TALB", text("\x01\xFF\xFE\x00\xD8A\x00"))))
-	defer odid3.destroy(&lone)
-	testing.expect_value(
+	expect_left_as_is(
 		t,
-		odid3.set_encoding(&lone.v2, odid3.Encoding.Latin1),
-		odid3.Error(odid3.Format_Error.Bad_Content),
+		3,
+		frame(3, "TALB", text("\x01\xFF\xFE\x00\xD8A\x00")),
+		.Latin1,
+		.Big_Endian,
 	)
+
+	// Inside a chapter too.
+	album := frame(4, "TALB", text("\x01\xFF\xFE\x00\xD8A\x00"))
+	title := frame(4, "TIT2", text("\x01\xFF\xFEA\x00"))
+	chapters := read(t, tag_file(4, 0, chapter_frame(4, "ch0", 0, 10, album, title)))
+	defer odid3.destroy(&chapters)
+	encoded, err := odid3.render(&chapters.v2, {encoding = .Latin1}, context.temp_allocator)
+	testing.expect_value(t, err, nil)
+	testing.expect_value(t, odid3.set_encoding(&chapters.v2, odid3.Encoding.Latin1), nil)
+	latin1 := read(t, encoded)
+	defer odid3.destroy(&latin1)
+	for tag in ([]^odid3.Tag{&chapters.v2, &latin1.v2}) {
+		if !testing.expect_value(t, len(tag.frames), 1) {
+			continue
+		}
+		chapter := expect_content(t, decode(t, &tag.frames[0], .V2_4), odid3.Chapter)
+		testing.expect(
+			t,
+			len(chapter.frames) == 2 &&
+			bytes.equal(chapter.frames[0].data, album[10:]) &&
+			string(chapter.frames[1].data) == "\x00A",
+		)
+	}
 
 	undecoded := read(
 		t,
@@ -184,25 +265,9 @@ text_that_would_not_survive :: proc(t: ^testing.T) {
 
 @(test)
 bytes_after_a_url_are_not_lost :: proc(t: ^testing.T) {
-	bad := odid3.Error(odid3.Format_Error.Bad_Content)
 	junk := concat({1}, utf16("", .Little_Endian), {0, 0}, text("http://x\x00junk"))
-	files := [?][]u8{tag_file(3, 0, frame(3, "WXXX", junk)), tag_file(2, 0, frame22("WXX", junk))}
-	for file in files {
-		tags := read(t, file)
-		defer odid3.destroy(&tags)
-		before := frames_snapshot(&tags.v2)
-		testing.expect_value(t, odid3.set_encoding(&tags.v2, odid3.Encoding.Latin1), bad)
-		testing.expect_value(
-			t,
-			odid3.set_encoding(&tags.v2.frames[0], tags.v2.version, .Latin1),
-			bad,
-		)
-		testing.expect_value(t, frames_snapshot(&tags.v2), before)
-		_, err := odid3.render(&tags.v2, {encoding = .Latin1}, context.temp_allocator)
-		testing.expect_value(t, err, bad)
-		_, err = odid3.render(&tags.v2, {utf16_byte_order = .Big_Endian}, context.temp_allocator)
-		testing.expect_value(t, err, bad)
-	}
+	expect_left_as_is(t, 3, frame(3, "WXXX", junk), .Latin1, .Big_Endian)
+	expect_left_as_is(t, 2, frame22("WXX", junk), .Latin1, .Big_Endian)
 
 	// A terminator alone after the URL holds nothing.
 	ended := read(
@@ -222,7 +287,6 @@ bytes_after_a_url_are_not_lost :: proc(t: ^testing.T) {
 odd_utf16_bytes_and_nuls_after_the_text :: proc(t: ^testing.T) {
 	// Decoding drops the odd last byte of a UTF-16 string, so it is lost unless it is a NUL, which
 	// some writers end UTF-16 text with in place of two.
-	bad := odid3.Error(odid3.Format_Error.Bad_Content)
 	odd_bytes := [?][]u8 {
 		frame(4, "TIT2", {0x02, 0x00, 'A', 'B'}),
 		frame(4, "TPE1", text("\x01\xFF\xFEA\x00B")),
@@ -235,18 +299,8 @@ odd_utf16_bytes_and_nuls_after_the_text :: proc(t: ^testing.T) {
 		frame(4, "WXXX", text("\x03d\x00http://x\x00\x00X")),
 	}
 	for odd in odd_bytes {
-		refused := read(t, tag_file(4, 0, odd))
-		defer odid3.destroy(&refused)
-		before := frames_snapshot(&refused.v2)
-		testing.expect_value(t, odid3.set_encoding(&refused.v2, odid3.Encoding.Latin1), bad)
-		testing.expect_value(t, frames_snapshot(&refused.v2), before)
-		_, err := odid3.render(&refused.v2, {encoding = .Latin1}, context.temp_allocator)
-		testing.expect_value(t, err, bad)
+		expect_left_as_is(t, 4, odd, .Latin1, .Big_Endian)
 	}
-	reordered := read(t, tag_file(4, 0, frame(4, "TIT2", text("\x01\xFF\xFEA\x00B"))))
-	defer odid3.destroy(&reordered)
-	_, err := odid3.render(&reordered.v2, {utf16_byte_order = .Big_Endian}, context.temp_allocator)
-	testing.expect_value(t, err, bad)
 
 	// An odd last NUL, and NULs alone after a comment or a URL (such as a doubled terminator),
 	// hold nothing either.
@@ -357,7 +411,6 @@ a_real_replacement_character_survives :: proc(t: ^testing.T) {
 
 	// D8 00 after a big endian first string is a surrogate without its pair, though it would be
 	// "Ø" in little endian; a real U+FFFD does not make one survive. Descriptions are checked too.
-	bad := odid3.Error(odid3.Format_Error.Bad_Content)
 	unpaired := []u8{0xFE, 0xFF, 0xD8, 0x00}
 	png := []u8{0, 0, 0x89, 'P', 'N', 'G'}
 	lone_surrogates := [?][]u8 {
@@ -370,25 +423,12 @@ a_real_replacement_character_survives :: proc(t: ^testing.T) {
 		frame(4, "APIC", concat({1}, text("image/png\x00\x03"), unpaired, png)),
 	}
 	for lone in lone_surrogates {
-		refused := read(t, tag_file(4, 0, lone))
-		defer odid3.destroy(&refused)
-		testing.expect_value(t, odid3.set_encoding(&refused.v2, odid3.Encoding.UTF8), bad)
-		_, err = odid3.render(&refused.v2, {encoding = .UTF8}, context.temp_allocator)
-		testing.expect_value(t, err, bad)
-		_, err = odid3.render(
-			&refused.v2,
-			{utf16_byte_order = .Little_Endian},
-			context.temp_allocator,
-		)
-		testing.expect_value(t, err, bad)
+		expect_left_as_is(t, 4, lone, .UTF8, .Little_Endian)
 	}
 	// Little endian, so that reading one byte off would find no surrogate.
 	unpaired_le := []u8{0xFF, 0xFE, 0x00, 0xD8}
-	v22 := read(t, tag_file(2, 0, frame22("PIC", concat({1}, text("PNG\x03"), unpaired_le, png))))
-	defer odid3.destroy(&v22)
-	testing.expect_value(t, odid3.set_encoding(&v22.v2, odid3.Encoding.Latin1), bad)
-	_, err = odid3.render(&v22.v2, {encoding = .Latin1}, context.temp_allocator)
-	testing.expect_value(t, err, bad)
+	picture := frame22("PIC", concat({1}, text("PNG\x03"), unpaired_le, png))
+	expect_left_as_is(t, 2, picture, .Latin1, .Big_Endian)
 }
 
 @(test)
